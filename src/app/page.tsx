@@ -122,7 +122,7 @@ export default function DashboardPage() {
                     totalReceita += dados.receita;
                     totalObjetos += dados.objetos;
                     for (const cat of mockApiData.categoriasDespesa) {
-                        totalDespesasPorCategoria[cat] += dados.despesas[cat as keyof typeof dados.despesas];
+                        totalDespesasPorCategoria[cat] += dados.despesas[cat as keyof typeof dados.despesas] as number;
                     }
                 }
             }
@@ -147,8 +147,9 @@ export default function DashboardPage() {
             for (const agfNome of agfsParaProcessar) {
                 const dados = mockApiData.dados[ano]?.[mes]?.[agfNome];
                 if (dados) {
-                    const despesa = Object.values(dados.despesas).reduce((a, b) => a + b, 0);
-                    resultadoMes += dados.receita - despesa;
+                    // AQUI ESTÁ A CORREÇÃO
+                    const despesa = Object.values(dados.despesas).reduce((a, b) => (a as number) + (b as number), 0) as number;
+                    resultadoMes += (dados.receita as number) - despesa;
                 }
             }
         }
