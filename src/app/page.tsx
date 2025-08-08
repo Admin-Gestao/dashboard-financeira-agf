@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useMemo, ReactElement } from 'react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LabelList } from 'recharts';
 
 // --- DADOS MOCKADOS ---
+// Em um cenário real, a API do Bubble retornaria dados baseados nos filtros de mês/ano.
+// Para simular, vamos manter os dados estáticos, mas a lógica de filtro funcionará.
 const mockApiData = {
   agfs: [ { id: 'cl', nome: 'Campo Limpo' }, { id: 'rp', nome: 'Republica' }, { id: 'sj', nome: 'São Jorge' }, { id: 'jm', nome: 'Jd. Marajoara' } ],
   categoriasDespesa: ['aluguel', 'comissoes', 'extras', 'folha_pagamento', 'impostos', 'veiculos', 'telefone'],
@@ -13,17 +15,14 @@ const mockApiData = {
     'São Jorge': { receita: 48000, objetos: 11000, despesas: { aluguel: 3500, comissoes: 2200, extras: 800, folha_pagamento: 17000, impostos: 4800, veiculos: 5500, telefone: 450 }},
     'Jd. Marajoara': { receita: 61000, objetos: 15000, despesas: { aluguel: 5500, comissoes: 3000, extras: 1200, folha_pagamento: 21000, impostos: 6000, veiculos: 7000, telefone: 600 }},
   },
-  evolucaoResultadoGeral: [ { mes: 'Jan', resultado: 28000 }, { mes: 'Fev', resultado: 35000 }, { mes: 'Mar', resultado: 31000 }, { mes: 'Abr', resultado: 42000 }, { mes: 'Mai', resultado: 38000 }, { mes: 'Jun', resultado: 45000 } ],
+  evolucaoResultadoGeral: [ { mes: 'Jan', resultado: 280000 }, { mes: 'Fev', resultado: 350000 }, { mes: 'Mar', resultado: 410000 }, { mes: 'Abr', resultado: 420000 }, { mes: 'Mai', resultado: 580000 }, { mes: 'Jun', resultado: 450000 } ],
 };
 
 // --- COMPONENTES DE UI ---
-const Card = ({ title, value, subValue, borderColor, valueColor }: { title: string, value: string, subValue?: string, borderColor: string, valueColor?: string }) => (
-  <div className="bg-card p-4 rounded-lg border-l-4" style={{ borderColor }}>
-    <div className="flex justify-between items-start">
-      <h3 className="text-sm text-text/80 font-semibold">{title}</h3>
-      {subValue && <span className="text-xs font-bold text-success">{subValue}</span>}
-    </div>
-    <p className={`text-2xl font-bold ${valueColor}`}>{value}</p>
+const Card = ({ title, value, borderColor }: { title: string, value: string, borderColor: string }) => (
+  <div className="bg-card p-4 rounded-lg border-l-4" style={{ borderImage: borderColor, borderImageSlice: 1 }}>
+    <h3 className="text-sm text-text/80 font-semibold">{title}</h3>
+    <p className="text-2xl font-bold text-text">{value}</p>
   </div>
 );
 
@@ -56,7 +55,12 @@ export default function DashboardPage() {
   const [categoriasExcluidas, setCategoriasExcluidas] = useState<string[]>([]);
 
   const dadosProcessados = useMemo(() => {
-    const totaisPorAgf = mockApiData.agfs.map(agf => {
+    // LÓGICA DE FILTRO PRINCIPAL
+    const agfsParaProcessar = agfSelecionada === 'todas' 
+      ? mockApiData.agfs 
+      : mockApiData.agfs.filter(agf => agf.nome === agfSelecionada);
+
+    const totaisPorAgf = agfsParaProcessar.map(agf => {
       const dadosAgf = mockApiData.dadosMensais[agf.nome as keyof typeof mockApiData.dadosMensais];
       const despesaTotal = Object.values(dadosAgf.despesas).reduce((acc, val) => acc + val, 0);
       const resultado = dadosAgf.receita - despesaTotal;
@@ -67,15 +71,22 @@ export default function DashboardPage() {
       const ganhoMargem = margemSimulada - margemLucro;
       return { nome: agf.nome, receita: dadosAgf.receita, despesaTotal, resultado, margemLucro, objetos: dadosAgf.objetos, despesasDetalhadas: dadosAgf.despesas, margemLucroReal: margemLucro, ganhoMargem: ganhoMargem > 0 ? ganhoMargem : 0 };
     });
-    const totaisGerais = { receita: totaisPorAgf.reduce((acc, agf) => acc + agf.receita, 0), despesa: totaisPorAgf.reduce((acc, agf) => acc + agf.despesaTotal, 0), resultado: totaisPorAgf.reduce((acc, agf) => acc + agf.resultado, 0), objetos: totaisPorAgf.reduce((acc, agf) => acc + agf.objetos, 0), margem: 0 };
-    totaisGerais.margem = totaisGerais.receita > 0 ? (totaisGerais.resultado / totaisGerais.receita) * 100 : 0;
+
+    const totaisGerais = { receita: totaisPorAgf.reduce((acc, agf) => acc + agf.receita, 0), despesa: totaisPorAgf.reduce((acc, agf) => acc + agf.despesaTotal, 0), resultado: totaisPorAgf.reduce((acc, agf) => acc + agf.resultado, 0), objetos: totaisPorAgf.reduce((acc, agf) => acc + agf.objetos, 0) };
+    
+    // TODO: A lógica do filtro de Mês/Ano deve ser aplicada na chamada da API do Bubble.
+    // Por enquanto, ela re-renderiza o componente, mas os dados mockados não mudam.
+    console.log(`Filtros aplicados: AGF=${agfSelecionada}, Mês=${mesSelecionado}, Ano=${anoSelecionado}`);
+
     return { totaisPorAgf, totaisGerais };
-  }, [categoriasExcluidas]);
+  }, [agfSelecionada, mesSelecionado, anoSelecionado, categoriasExcluidas]);
 
   const handleCategoriaToggle = (categoria: string) => { setCategoriasExcluidas(prev => prev.includes(categoria) ? prev.filter(c => c !== categoria) : [...prev, categoria]); };
   const currencyFormatter = (value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   const percentFormatter = (value: number) => `${value.toFixed(1)}%`;
-  const compactCurrencyFormatter = (value: number) => new Intl.NumberFormat('pt-BR', { notation: 'compact', style: 'currency', currency: 'BRL' }).format(value);
+  const numberFormatter = (value: number) => value.toLocaleString('pt-BR');
+
+  const CORES = { receita: '#4AA8FF', despesa: '#E74C3C', resultado: '#48DB8A', margem: '#A974F8', simulacaoReal: '#A974F8', simulacaoGanho: '#F4D35E' };
 
   return (
     <div className="p-4 md:p-8">
@@ -94,24 +105,38 @@ export default function DashboardPage() {
         </header>
 
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          <Card title="Resultado" value={currencyFormatter(dadosProcessados.totaisGerais.resultado)} subValue={percentFormatter(dadosProcessados.totaisGerais.margem)} borderColor="var(--tw-color-success)" valueColor="text-success" />
-          <Card title="Receita Total" value={currencyFormatter(dadosProcessados.totaisGerais.receita)} borderColor="var(--tw-color-info)" valueColor="text-info" />
-          <Card title="Despesa Total" value={currencyFormatter(dadosProcessados.totaisGerais.despesa)} borderColor="var(--tw-color-destructive)" valueColor="text-destructive" />
-          <Card title="Objetos Tratados" value={dadosProcessados.totaisGerais.objetos.toLocaleString('pt-BR')} borderColor="var(--tw-color-warning)" valueColor="text-warning" />
+          <Card title="Resultado" value={currencyFormatter(dadosProcessados.totaisGerais.resultado)} borderColor="linear-gradient(to bottom, #48DB8A, #1a5935)" />
+          <Card title="Receita Total" value={currencyFormatter(dadosProcessados.totaisGerais.receita)} borderColor={CORES.receita} />
+          <Card title="Despesa Total" value={currencyFormatter(dadosProcessados.totaisGerais.despesa)} borderColor={CORES.despesa} />
+          <Card title="Objetos Tratados" value={numberFormatter(dadosProcessados.totaisGerais.objetos)} borderColor="var(--tw-color-warning)" />
         </section>
 
-        <section><ChartContainer title="Resultado ao Longo do Tempo" className="h-[300px]"><LineChart data={mockApiData.evolucaoResultadoGeral} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis dataKey="mes" stroke="#E9F2FF" /><YAxis stroke="#E9F2FF" tickFormatter={compactCurrencyFormatter} /><Tooltip content={<CustomTooltip formatter={currencyFormatter} />} /><Line type="monotone" dataKey="resultado" name="Resultado" stroke="var(--tw-color-primary)" strokeWidth={2} /></LineChart></ChartContainer></section>
+        <section><ChartContainer title="Resultado ao longo do tempo" className="h-[300px]">
+            <AreaChart data={mockApiData.evolucaoResultadoGeral} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
+              <defs>
+                <linearGradient id="colorResultado" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#F2935C" stopOpacity={0.8}/>
+                  <stop offset="95%" stopColor="#1F1F3C" stopOpacity={0.1}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
+              <XAxis dataKey="mes" stroke="#E9F2FF" tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} />
+              <YAxis stroke="#E9F2FF" tickFormatter={(value) => value.toLocaleString('pt-BR', {notation: 'compact', compactDisplay: 'short'})} tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} />
+              <Tooltip content={<CustomTooltip formatter={currencyFormatter} />} />
+              <Area type="monotone" dataKey="resultado" name="Resultado" stroke="#F2935C" strokeWidth={2} fill="url(#colorResultado)" />
+            </AreaChart>
+        </ChartContainer></section>
 
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <ChartContainer title="Comparativo de Receita" className="h-[350px]"><BarChart layout="vertical" data={dadosProcessados.totaisPorAgf} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis type="number" stroke="#E9F2FF" tickFormatter={compactCurrencyFormatter} /><YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} interval={0} /><Tooltip content={<CustomTooltip formatter={currencyFormatter} />} /><Bar dataKey="receita" fill="var(--tw-color-info)" name="Receita" /></BarChart></ChartContainer>
-          <ChartContainer title="Comparativo de Despesa" className="h-[350px]"><BarChart layout="vertical" data={dadosProcessados.totaisPorAgf} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis type="number" stroke="#E9F2FF" tickFormatter={compactCurrencyFormatter} /><YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} interval={0} /><Tooltip content={<CustomTooltip formatter={currencyFormatter} />} /><Bar dataKey="despesaTotal" fill="var(--tw-color-destructive)" name="Despesa" /></BarChart></ChartContainer>
-          <ChartContainer title="Comparativo de Resultado" className="h-[350px]"><BarChart layout="vertical" data={dadosProcessados.totaisPorAgf} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis type="number" stroke="#E9F2FF" tickFormatter={compactCurrencyFormatter} /><YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} interval={0} /><Tooltip content={<CustomTooltip formatter={currencyFormatter} />} /><Bar dataKey="resultado" fill="var(--tw-color-success)" name="Resultado" /></BarChart></ChartContainer>
-          <ChartContainer title="Comparativo de Margem de Lucro (%)" className="h-[350px]"><BarChart layout="vertical" data={dadosProcessados.totaisPorAgf} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis type="number" stroke="#E9F2FF" tickFormatter={percentFormatter} /><YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} interval={0} /><Tooltip content={<CustomTooltip formatter={percentFormatter} />} /><Bar dataKey="margemLucro" fill="var(--tw-color-primary)" name="Margem" /></BarChart></ChartContainer>
+          <ChartContainer title="Comparativo de Receita" className="h-[280px]"><BarChart data={dadosProcessados.totaisPorAgf} margin={{ top: 20, right: 20, left: -20, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis dataKey="nome" tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} /><YAxis hide={true} /><Tooltip content={<CustomTooltip formatter={currencyFormatter} />} /><Bar dataKey="receita" fill={CORES.receita} name="Receita"><LabelList dataKey="receita" position="top" formatter={(value: number) => value.toLocaleString('pt-BR', {notation: 'compact'})} style={{ fill: '#E9F2FF', fontSize: 12 }} /></Bar></BarChart></ChartContainer>
+          <ChartContainer title="Comparativo de Despesa" className="h-[280px]"><BarChart data={dadosProcessados.totaisPorAgf} margin={{ top: 20, right: 20, left: -20, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis dataKey="nome" tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} /><YAxis hide={true} /><Tooltip content={<CustomTooltip formatter={currencyFormatter} />} /><Bar dataKey="despesaTotal" fill={CORES.despesa} name="Despesa"><LabelList dataKey="despesaTotal" position="top" formatter={(value: number) => value.toLocaleString('pt-BR', {notation: 'compact'})} style={{ fill: '#E9F2FF', fontSize: 12 }} /></Bar></BarChart></ChartContainer>
+          <ChartContainer title="Comparativo de Resultado" className="h-[280px]"><BarChart data={dadosProcessados.totaisPorAgf} margin={{ top: 20, right: 20, left: -20, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis dataKey="nome" tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} /><YAxis hide={true} /><Tooltip content={<CustomTooltip formatter={currencyFormatter} />} /><Bar dataKey="resultado" fill={CORES.resultado} name="Resultado"><LabelList dataKey="resultado" position="top" formatter={(value: number) => value.toLocaleString('pt-BR', {notation: 'compact'})} style={{ fill: '#E9F2FF', fontSize: 12 }} /></Bar></BarChart></ChartContainer>
+          <ChartContainer title="Comparativo de Margem de Lucro (%)" className="h-[280px]"><BarChart data={dadosProcessados.totaisPorAgf} margin={{ top: 20, right: 20, left: -20, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis dataKey="nome" tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} /><YAxis hide={true} /><Tooltip content={<CustomTooltip formatter={percentFormatter} />} /><Bar dataKey="margemLucro" fill={CORES.margem} name="Margem"><LabelList dataKey="margemLucro" position="top" formatter={(value: number) => `${value.toFixed(1)}%`} style={{ fill: '#E9F2FF', fontSize: 12 }} /></Bar></BarChart></ChartContainer>
         </section>
         
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            <ChartContainer title="Folha de Pagamento" className="h-[350px]"><BarChart data={dadosProcessados.totaisPorAgf} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis dataKey="nome" stroke="#E9F2FF" /><YAxis stroke="#E9F2FF" tickFormatter={compactCurrencyFormatter} /><Tooltip content={<CustomTooltip formatter={currencyFormatter} />} /><Bar dataKey="despesasDetalhadas.folha_pagamento" fill="#4472CA" name="Folha de Pagamento" /></BarChart></ChartContainer>
-            <ChartContainer title="Total Gasto em Veículos por AGF" className="h-[350px]"><PieChart><Tooltip formatter={currencyFormatter} /><Legend /><Pie data={dadosProcessados.totaisPorAgf} dataKey="despesasDetalhadas.veiculos" nameKey="nome" cx="50%" cy="50%" outerRadius={100} label>{dadosProcessados.totaisPorAgf.map((_, index) => (<Cell key={`cell-${index}`} fill={['#F2935C', '#BF6550', '#4472CA', '#48DB8A'][index % 4]} />))}</Pie></PieChart></ChartContainer>
+            <ChartContainer title="Folha de Pagamento" className="h-[350px]"><BarChart data={dadosProcessados.totaisPorAgf} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis dataKey="nome" tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} /><YAxis tickFormatter={(value) => value.toLocaleString('pt-BR', {notation: 'compact'})} tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} /><Tooltip content={<CustomTooltip formatter={currencyFormatter} />} /><Bar dataKey="despesasDetalhadas.folha_pagamento" fill="#4472CA" name="Folha de Pagamento" /></BarChart></ChartContainer>
+            <ChartContainer title="Total Gasto em Veículos por AGF" className="h-[350px]"><PieChart><Tooltip formatter={currencyFormatter} /><Legend wrapperStyle={{fontSize: "12px", opacity: 0.8}} /><Pie data={dadosProcessados.totaisPorAgf} dataKey="despesasDetalhadas.veiculos" nameKey="nome" cx="50%" cy="50%" outerRadius={100} labelLine={false} label={({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => { const radius = innerRadius + (outerRadius - innerRadius) * 0.5; const x = cx + radius * Math.cos(-midAngle * (Math.PI / 180)); const y = cy + radius * Math.sin(-midAngle * (Math.PI / 180)); return (<text x={x} y={y} fill="white" textAnchor={x > cx ? 'start' : 'end'} dominantBaseline="central" fontSize={12}>{`${(percent * 100).toFixed(0)}%`}</text>);}}>{dadosProcessados.totaisPorAgf.map((_, index) => (<Cell key={`cell-${index}`} fill={['#F2935C', '#BF6550', '#4472CA', '#48DB8A'][index % 4]} />))}</Pie></PieChart></ChartContainer>
         </section>
 
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -122,7 +147,7 @@ export default function DashboardPage() {
         <section className="bg-card p-4 rounded-lg">
             <h3 className="font-bold mb-4 text-text">Simulação de Margem de Lucro</h3>
             <div className="mb-4"><p className="text-sm text-text/80 mb-2">Selecione despesas para excluir do cálculo:</p><div className="flex flex-wrap gap-2">{mockApiData.categoriasDespesa.map(cat => (<button key={cat} onClick={() => handleCategoriaToggle(cat)} className={`px-3 py-1 text-xs rounded-full transition-colors capitalize ${categoriasExcluidas.includes(cat) ? 'bg-primary text-white' : 'bg-gray-600/50 text-text/80'}`}>{cat.replace('_', ' ')}</button>))}</div></div>
-            <ChartContainer title="" className="h-[300px]"><BarChart data={dadosProcessados.totaisPorAgf} layout="horizontal" margin={{ top: 5, right: 20, left: -10, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis type="category" dataKey="nome" stroke="#E9F2FF" /><YAxis type="number" stroke="#E9F2FF" tickFormatter={percentFormatter} /><Tooltip content={<CustomTooltip formatter={percentFormatter} />} /><Legend /><Bar dataKey="margemLucroReal" stackId="a" fill="var(--tw-color-info)" name="Margem Real" /><Bar dataKey="ganhoMargem" stackId="a" fill="var(--tw-color-success)" name="Ganho de Margem" /></BarChart></ChartContainer>
+            <ChartContainer title="" className="h-[300px]"><BarChart data={dadosProcessados.totaisPorAgf} layout="vertical" stackOffset="expand" margin={{ top: 5, right: 20, left: -10, bottom: 5 }}><CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" /><XAxis type="number" hide={true} /><YAxis type="category" dataKey="nome" stroke="#E9F2FF" tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} width={80} /><Tooltip content={<CustomTooltip formatter={percentFormatter} />} /><Legend wrapperStyle={{fontSize: "12px", opacity: 0.8}} /><Bar dataKey="margemLucroReal" stackId="a" fill={CORES.simulacaoReal} name="Margem Real" /><Bar dataKey="ganhoMargem" stackId="a" fill={CORES.simulacaoGanho} name="Ganho de Margem" /></BarChart></ChartContainer>
         </section>
       </main>
     </div>
