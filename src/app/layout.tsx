@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
-import "./globals.css";
+import "./globals.css"; // Importação crucial
 
 export const metadata: Metadata = {
-  title: "Dashboard Financeira",
-  description: "Dashboard para gestão de franquias AGF",
+  title: "Dashboard Financeira AGF",
+  description: "Gerado por Manus",
 };
 
 export default function RootLayout({
