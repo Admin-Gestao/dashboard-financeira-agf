@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, ReactElement } from 'react'; // Importa ReactElement
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
 import { ChevronDown } from 'lucide-react';
 
@@ -49,13 +49,14 @@ const Card = ({ title, value, subValue, borderColor, valueColor = 'text-white' }
   <div className="bg-[#1F1F3C] p-4 rounded-lg backdrop-blur-sm border-l-4" style={{ borderColor }}>
     <div className="flex justify-between items-start">
       <h3 className="text-sm text-text/80 font-semibold">{title}</h3>
-      {subValue && <span className="text-xs font-bold text-success">{subValue}</span>}
+      {subValue && <span className="text-xs font-bold text-green-400">{subValue}</span>}
     </div>
     <p className={`text-2xl font-bold ${valueColor}`}>{value}</p>
   </div>
 );
 
-const ChartContainer = ({ title, children }: { title: string, children: React.ReactNode }) => (
+// AQUI ESTÁ A CORREÇÃO: React.ReactNode foi trocado por React.ReactElement
+const ChartContainer = ({ title, children }: { title: string, children: ReactElement }) => (
   <div className="bg-[#1F1F3C] p-4 rounded-lg backdrop-blur-sm h-[350px] flex flex-col">
     <h3 className="font-bold mb-4 text-text">{title}</h3>
     <div className="flex-grow">
@@ -68,12 +69,13 @@ const ChartContainer = ({ title, children }: { title: string, children: React.Re
 
 const CustomTooltip = ({ active, payload, label }: any) => {
   if (active && payload && payload.length) {
+    const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
     return (
-      <div className="bg-[#010440] p-2 border border-primary/50 rounded-md text-sm">
+      <div className="bg-[#010440] p-2 border border-[#F2935C]/50 rounded-md text-sm">
         <p className="label font-bold">{`${label}`}</p>
         {payload.map((pld: any, index: number) => (
           <p key={index} style={{ color: pld.color }}>
-            {`${pld.name}: ${pld.value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`}
+            {`${pld.name}: ${currencyFormatter.format(pld.value)}`}
           </p>
         ))}
       </div>
@@ -124,6 +126,7 @@ export default function DashboardPage() {
       despesa: totaisPorAgf.reduce((acc, agf) => acc + agf.despesaTotal, 0),
       resultado: totaisPorAgf.reduce((acc, agf) => acc + agf.resultado, 0),
       objetos: totaisPorAgf.reduce((acc, agf) => acc + agf.objetos, 0),
+      margem: 0
     };
     totaisGerais.margem = totaisGerais.receita > 0 ? (totaisGerais.resultado / totaisGerais.receita) * 100 : 0;
 
@@ -151,23 +154,23 @@ export default function DashboardPage() {
       <main className="max-w-7xl mx-auto">
         {/* --- CABEÇALHO E FILTROS --- */}
         <header className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-          <select value={agfSelecionada} onChange={(e) => setAgfSelecionada(e.target.value)} className="bg-[#1F1F3C] border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary w-full">
+          <select value={agfSelecionada} onChange={(e) => setAgfSelecionada(e.target.value)} className="bg-[#1F1F3C] border border-[#F2935C]/50 text-white p-2 rounded-md focus:ring-2 focus:ring-[#F2935C] w-full">
             <option value="todas">Todas as AGFs</option>
             {mockApiData.agfs.map(agf => <option key={agf.id} value={agf.nome}>{agf.nome}</option>)}
           </select>
-          <select value={mesSelecionado} onChange={(e) => setMesSelecionado(Number(e.target.value))} className="bg-[#1F1F3C] border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary w-full">
+          <select value={mesSelecionado} onChange={(e) => setMesSelecionado(Number(e.target.value))} className="bg-[#1F1F3C] border border-[#F2935C]/50 text-white p-2 rounded-md focus:ring-2 focus:ring-[#F2935C] w-full">
             {Array.from({length: 12}, (_, i) => <option key={i+1} value={i+1}>{new Date(0, i).toLocaleString('pt-BR', { month: 'long' })}</option>)}
           </select>
-          <select value={anoSelecionado} onChange={(e) => setAnoSelecionado(Number(e.target.value))} className="bg-[#1F1F3C] border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary w-full">
+          <select value={anoSelecionado} onChange={(e) => setAnoSelecionado(Number(e.target.value))} className="bg-[#1F1F3C] border border-[#F2935C]/50 text-white p-2 rounded-md focus:ring-2 focus:ring-[#F2935C] w-full">
             {[2023, 2024, 2025].map(ano => <option key={ano} value={ano}>{ano}</option>)}
           </select>
         </header>
 
         {/* --- CARDS PRINCIPAIS --- */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <Card title="Resultado" value={dadosProcessados.totaisGerais.resultado.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} subValue={`${dadosProcessados.totaisGerais.margem.toFixed(1)}%`} borderColor={CORES.resultado} valueColor="text-success" />
-          <Card title="Receita Total" value={dadosProcessados.totaisGerais.receita.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} borderColor={CORES.receita} valueColor="text-info" />
-          <Card title="Despesa Total" value={dadosProcessados.totaisGerais.despesa.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} borderColor={CORES.despesa} valueColor="text-destructive" />
+          <Card title="Resultado" value={dadosProcessados.totaisGerais.resultado.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} subValue={`${dadosProcessados.totaisGerais.margem.toFixed(1)}%`} borderColor={CORES.resultado} valueColor="text-green-400" />
+          <Card title="Receita Total" value={dadosProcessados.totaisGerais.receita.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} borderColor={CORES.receita} valueColor="text-blue-400" />
+          <Card title="Despesa Total" value={dadosProcessados.totaisGerais.despesa.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} borderColor={CORES.despesa} valueColor="text-red-500" />
           <Card title="Objetos Tratados" value={dadosProcessados.totaisGerais.objetos.toLocaleString('pt-BR')} borderColor={CORES.objetos} valueColor="text-yellow-400" />
         </section>
 
@@ -188,32 +191,32 @@ export default function DashboardPage() {
         <section className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
           <ChartContainer title="Comparativo de Receita">
             <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical">
-              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact' }).format(value)} />
-              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} />
+              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact', style: 'currency', currency: 'BRL' }).format(value)} />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} interval={0} />
               <Tooltip content={<CustomTooltip />} />
               <Bar dataKey="receita" fill={CORES.receita} name="Receita" />
             </BarChart>
           </ChartContainer>
           <ChartContainer title="Comparativo de Despesa">
             <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical">
-              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact' }).format(value)} />
-              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} />
+              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact', style: 'currency', currency: 'BRL' }).format(value)} />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} interval={0} />
               <Tooltip content={<CustomTooltip />} />
               <Bar dataKey="despesaTotal" fill={CORES.despesa} name="Despesa" />
             </BarChart>
           </ChartContainer>
           <ChartContainer title="Comparativo de Resultado">
             <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical">
-              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact' }).format(value)} />
-              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} />
+              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact', style: 'currency', currency: 'BRL' }).format(value)} />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} interval={0} />
               <Tooltip content={<CustomTooltip />} />
               <Bar dataKey="resultado" fill={CORES.resultado} name="Resultado" />
             </BarChart>
           </ChartContainer>
           <ChartContainer title="Comparativo de Margem de Lucro (%)">
             <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical">
-              <XAxis type="number" stroke="#E9F2FF" />
-              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} />
+              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => `${value}%`} />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} interval={0} />
               <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
               <Bar dataKey="margemLucro" fill={CORES.linhaEvolucao} name="Margem" />
             </BarChart>
@@ -226,7 +229,7 @@ export default function DashboardPage() {
                 <BarChart data={dadosProcessados.totaisPorAgf}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
                     <XAxis dataKey="nome" stroke="#E9F2FF" />
-                    <YAxis stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact' }).format(value)} />
+                    <YAxis stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact', style: 'currency', currency: 'BRL' }).format(value)} />
                     <Tooltip content={<CustomTooltip />} />
                     <Bar dataKey="despesasDetalhadas.folha_pagamento" fill={CORES.folhaPagamento} name="Folha de Pagamento" />
                 </BarChart>
@@ -238,7 +241,7 @@ export default function DashboardPage() {
                             <Cell key={`cell-${index}`} fill={CORES.pizza[index % CORES.pizza.length]} />
                         ))}
                     </Pie>
-                    <Tooltip formatter={(value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} />
+                    <Tooltip formatter={(value: number) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)} />
                     <Legend />
                 </PieChart>
             </ChartContainer>
@@ -250,7 +253,7 @@ export default function DashboardPage() {
                 <h3 className="font-bold mb-4 text-text">Objetos Tratados por AGF</h3>
                 <table className="w-full text-left text-sm">
                     <thead>
-                        <tr className="border-b border-primary/20">
+                        <tr className="border-b border-[#F2935C]/20">
                             <th className="p-2">AGF</th>
                             <th className="p-2 text-right">Quantidade</th>
                         </tr>
@@ -270,7 +273,7 @@ export default function DashboardPage() {
                 <div className="overflow-x-auto">
                     <table className="w-full text-left text-sm">
                         <thead>
-                            <tr className="border-b border-primary/20">
+                            <tr className="border-b border-[#F2935C]/20">
                                 <th className="p-2">AGF</th>
                                 {mockApiData.categoriasDespesa.map(cat => <th key={cat} className="p-2 text-right capitalize">{cat.replace('_', ' ')}</th>)}
                             </tr>
@@ -280,7 +283,7 @@ export default function DashboardPage() {
                                 <tr key={agf.nome} className="border-b border-white/10">
                                     <td className="p-2 font-semibold">{agf.nome}</td>
                                     {mockApiData.categoriasDespesa.map(cat => (
-                                        <td key={cat} className="p-2 text-right text-destructive/90">
+                                        <td key={cat} className="p-2 text-right text-red-400/90">
                                             {(agf.despesasDetalhadas[cat as keyof typeof agf.despesasDetalhadas] || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 0 })}
                                         </td>
                                     ))}
@@ -299,7 +302,7 @@ export default function DashboardPage() {
                 <p className="text-sm text-text/80 mb-2">Selecione as despesas para remover do cálculo:</p>
                 <div className="flex flex-wrap gap-2">
                     {mockApiData.categoriasDespesa.map(cat => (
-                        <button key={cat} onClick={() => handleCategoriaToggle(cat)} className={`px-3 py-1 text-xs rounded-full transition-colors ${categoriasExcluidas.includes(cat) ? 'bg-primary text-white' : 'bg-gray-600/50 text-text/80'}`}>
+                        <button key={cat} onClick={() => handleCategoriaToggle(cat)} className={`px-3 py-1 text-xs rounded-full transition-colors capitalize ${categoriasExcluidas.includes(cat) ? 'bg-[#F2935C] text-white' : 'bg-gray-600/50 text-text/80'}`}>
                             {cat.replace('_', ' ')}
                         </button>
                     ))}
