@@ -4,7 +4,7 @@ import { useState, useMemo, ReactElement, useRef, useEffect } from 'react';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LabelList } from 'recharts';
 import { ChevronDown } from 'lucide-react';
 
-// --- DADOS MOCKADOS V4.2 (variação por Mês/Ano para testar filtros) ---
+// --- DADOS MOCKADOS V4.4 (variação por Mês/Ano para testar filtros) ---
 const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
   const data: any = {};
   for (const ano of anos) {
@@ -310,9 +310,9 @@ export default function DashboardPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="nome" tick={{ fill: '#E9F2FF', opacity: 0.7, fontSize: 12 }} />
               <YAxis hide={true} />
-              <Tooltip content={<CustomTooltip formatter={(v: number) => `${v.toFixed(1)}%`]} cursor={{ fill: 'rgba(255, 255, 255, 0.1)' }} />
+              <Tooltip content={<CustomTooltip formatter={percentFormatter} />} cursor={{ fill: 'rgba(255, 255, 255, 0.1)' }} />
               <Bar dataKey="margemLucro" fill={CORES.margem} name="Margem">
-                <LabelList dataKey="margemLucro" position="top" formatter={(v: number) => `${v.toFixed(1)}%`} style={{ fill: '#E9F2FF', fontSize: 12 }} />
+                <LabelList dataKey="margemLucro" position="top" formatter={percentFormatter} style={{ fill: '#E9F2FF', fontSize: 12 }} />
               </Bar>
             </BarChart>
           </ChartContainer>
@@ -355,8 +355,8 @@ export default function DashboardPage() {
                 }}
               >
                 {dadosProcessados.totaisPorAgf.map((_, index) => (
-                  <Cell key={`cell-${index}`} fill={['#F2935C', '#BF6550', '#4472CA', '#48DB8A'][index % 4]} />)
-                )}
+                  <Cell key={`cell-${index}`} fill={['#F2935C', '#BF6550', '#4472CA', '#48DB8A'][index % 4]} />
+                ))}
               </Pie>
             </PieChart>
           </ChartContainer>
@@ -457,3 +457,4 @@ export default function DashboardPage() {
     </div>
   );
 }
+
