@@ -3,10 +3,10 @@ import type { Config } from "tailwindcss";
 const config: Config = {
   darkMode: ["class"],
   content: [
-    './pages/**/*.{ts,tsx}',
-    './components/**/*.{ts,tsx}',
-    './app/**/*.{ts,tsx}',
-    './src/**/*.{ts,tsx}',
+    './pages/**/*.{js,ts,jsx,tsx,mdx}',
+    './components/**/*.{js,ts,jsx,tsx,mdx}',
+    './app/**/*.{js,ts,jsx,tsx,mdx}',
+    './src/**/*.{js,ts,jsx,tsx,mdx}', // Garante que a pasta src seja lida
   ],
   prefix: "",
   theme: {
@@ -19,31 +19,20 @@ const config: Config = {
     },
     extend: {
       colors: {
-        primary: {
-          DEFAULT: "#F2935C",
-          foreground: "#010326",
-        },
-        secondary: {
-          DEFAULT: "#BF6550",
-          foreground: "#E9F2FF",
-        },
+        // Cores da sua paleta
+        primary: '#F2935C',
+        secondary: '#BF6550',
         background: {
-          start: "#010326",
-          end: "#010440",
+          start: '#010326',
+          end: '#010440',
         },
-        text: "#E9F2FF",
-        destructive: {
-          DEFAULT: "#ef4444", // Vermelho para despesas
-          foreground: "#E9F2FF",
-        },
-        success: {
-          DEFAULT: "#22c55e", // Verde para resultado
-          foreground: "#010326",
-        },
-        info: {
-          DEFAULT: "#3b82f6", // Azul para receita
-          foreground: "#E9F2FF",
-        },
+        text: '#E9F2FF',
+        card: '#1F1F3C',
+        // Cores semânticas
+        success: '#48DB8A',
+        info: '#4AA8FF',
+        destructive: '#E74C3C',
+        warning: '#F2C14E',
       },
       fontFamily: {
         poppins: ["Poppins", "sans-serif"],
