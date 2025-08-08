@@ -8,7 +8,4 @@
   body {
     @apply min-h-screen bg-gradient-to-br from-background-start to-background-end text-text font-poppins;
   }
-  .custom-select {
-      @apply bg-card border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary w-full;
-  }
 }
