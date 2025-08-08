@@ -1,224 +1,325 @@
-"use client"; // Necessário para usar hooks como useState e useEffect
+"use client";
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell } from 'recharts';
+import { ChevronDown } from 'lucide-react';
 
-// --- DADOS MOCKADOS (SUBSTITUIR PELA API DO BUBBLE) ---
-// Simula os dados que viriam da sua API do Bubble
+// --- DADOS MOCKADOS V2.0 (Mais próximos da realidade) ---
 const mockApiData = {
-  cards: {
-    receitaTotal: 125000,
-    resultadoTotal: 35000,
-    despesaTotal: 90000,
-    objetosTratados: 15200,
-    margemLucroMedia: 28, // em porcentagem
+  agfs: [
+    { id: 'cl', nome: 'Campo Limpo' },
+    { id: 'rp', nome: 'Republica' },
+    { id: 'sj', nome: 'São Jorge' },
+    { id: 'jm', nome: 'Jd. Marajoara' },
+  ],
+  categoriasDespesa: ['aluguel', 'comissoes', 'extras', 'folha_pagamento', 'impostos', 'veiculos', 'telefone'],
+  dadosMensais: {
+    // Dados para cada AGF, para um determinado mês/ano
+    'Campo Limpo': {
+      receita: 52000,
+      objetos: 12300,
+      despesas: { aluguel: 4000, comissoes: 2500, extras: 1000, folha_pagamento: 18000, impostos: 5000, veiculos: 6000, telefone: 500 },
+    },
+    'Republica': {
+      receita: 75000,
+      objetos: 18500,
+      despesas: { aluguel: 8000, comissoes: 4000, extras: 1500, folha_pagamento: 25000, impostos: 7500, veiculos: 8000, telefone: 700 },
+    },
+    'São Jorge': {
+      receita: 48000,
+      objetos: 11000,
+      despesas: { aluguel: 3500, comissoes: 2200, extras: 800, folha_pagamento: 17000, impostos: 4800, veiculos: 5500, telefone: 450 },
+    },
+    'Jd. Marajoara': {
+      receita: 61000,
+      objetos: 15000,
+      despesas: { aluguel: 5500, comissoes: 3000, extras: 1200, folha_pagamento: 21000, impostos: 6000, veiculos: 7000, telefone: 600 },
+    },
   },
-  resultadoEvolucao: [
-    { mes: 'Jan', resultado: 2800 },
-    { mes: 'Fev', resultado: 3500 },
-    { mes: 'Mar', resultado: 3100 },
-    { mes: 'Abr', resultado: 4200 },
-    { mes: 'Mai', resultado: 3800 },
-    { mes: 'Jun', resultado: 4500 },
+  evolucaoResultadoGeral: [
+    { mes: 'Jan', resultado: 28000 }, { mes: 'Fev', resultado: 35000 }, { mes: 'Mar', resultado: 31000 },
+    { mes: 'Abr', resultado: 42000 }, { mes: 'Mai', resultado: 38000 }, { mes: 'Jun', resultado: 45000 },
   ],
-  comparativoAgfs: [
-    { nome: 'AGF Campo Limpo', receita: 45000, despesa: 32000, resultado: 13000, margemLucro: 28.8 },
-    { nome: 'AGF Santo Amaro', receita: 55000, despesa: 41000, resultado: 14000, margemLucro: 25.4 },
-    { nome: 'AGF Pinheiros', receita: 25000, despesa: 17000, resultado: 8000, margemLucro: 32.0 },
-  ],
-  despesasPorCategoria: [
-      { nome: 'AGF Campo Limpo', 'Folha de Pagamento': 15000, 'Veículos': 5000, 'Aluguel': 4000, 'Outros': 8000 },
-      { nome: 'AGF Santo Amaro', 'Folha de Pagamento': 18000, 'Veículos': 7000, 'Aluguel': 5000, 'Outros': 11000 },
-      { nome: 'AGF Pinheiros', 'Folha de Pagamento': 8000, 'Veículos': 3000, 'Aluguel': 2500, 'Outros': 3500 },
-  ],
-  objetosPorAgf: [
-      { nome: 'AGF Campo Limpo', quantidade: 5800 },
-      { nome: 'AGF Santo Amaro', quantidade: 6400 },
-      { nome: 'AGF Pinheiros', quantidade: 3000 },
-  ]
 };
 // --- FIM DOS DADOS MOCKADOS ---
 
+// --- COMPONENTES DE UI (para organizar o código) ---
+
+const Card = ({ title, value, subValue, borderColor, valueColor = 'text-white' }: { title: string, value: string, subValue?: string, borderColor: string, valueColor?: string }) => (
+  <div className="bg-[#1F1F3C] p-4 rounded-lg backdrop-blur-sm border-l-4" style={{ borderColor }}>
+    <div className="flex justify-between items-start">
+      <h3 className="text-sm text-text/80 font-semibold">{title}</h3>
+      {subValue && <span className="text-xs font-bold text-success">{subValue}</span>}
+    </div>
+    <p className={`text-2xl font-bold ${valueColor}`}>{value}</p>
+  </div>
+);
+
+const ChartContainer = ({ title, children }: { title: string, children: React.ReactNode }) => (
+  <div className="bg-[#1F1F3C] p-4 rounded-lg backdrop-blur-sm h-[350px] flex flex-col">
+    <h3 className="font-bold mb-4 text-text">{title}</h3>
+    <div className="flex-grow">
+      <ResponsiveContainer width="100%" height="100%">
+        {children}
+      </ResponsiveContainer>
+    </div>
+  </div>
+);
+
+const CustomTooltip = ({ active, payload, label }: any) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-[#010440] p-2 border border-primary/50 rounded-md text-sm">
+        <p className="label font-bold">{`${label}`}</p>
+        {payload.map((pld: any, index: number) => (
+          <p key={index} style={{ color: pld.color }}>
+            {`${pld.name}: ${pld.value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`}
+          </p>
+        ))}
+      </div>
+    );
+  }
+  return null;
+};
+
 
 export default function DashboardPage() {
-  // Estado para os filtros
+  // --- ESTADOS E FILTROS ---
   const [agfSelecionada, setAgfSelecionada] = useState('todas');
   const [mesSelecionado, setMesSelecionado] = useState(new Date().getMonth() + 1);
   const [anoSelecionado, setAnoSelecionado] = useState(new Date().getFullYear());
-  
-  // Estado para armazenar os dados da API
-  const [dados, setDados] = useState(mockApiData);
+  const [categoriasExcluidas, setCategoriasExcluidas] = useState<string[]>([]);
 
-  // TODO: Implementar a chamada à API do Bubble
-  useEffect(() => {
-    // Exemplo de como você chamaria a API
-    const fetchDados = async () => {
-      // O ID da empresa mãe viria como parâmetro na URL quando você embutir no Bubble
-      // Ex: https://sua-url.vercel.app?empresaMaeId=1751489874623x656617143249867800
-      const urlParams = new URLSearchParams(window.location.search );
-      const empresaMaeId = urlParams.get('empresaMaeId');
+  // --- LÓGICA DE CÁLCULO (MEMOIZED) ---
+  const dadosProcessados = useMemo(() => {
+    const totaisPorAgf = mockApiData.agfs.map(agf => {
+      const dadosAgf = mockApiData.dadosMensais[agf.nome as keyof typeof mockApiData.dadosMensais];
+      const despesaTotal = Object.values(dadosAgf.despesas).reduce((acc, val) => acc + val, 0);
+      const resultado = dadosAgf.receita - despesaTotal;
+      const margemLucro = dadosAgf.receita > 0 ? (resultado / dadosAgf.receita) * 100 : 0;
+      
+      // Simulação
+      const despesaSimulada = Object.entries(dadosAgf.despesas)
+        .filter(([key]) => !categoriasExcluidas.includes(key))
+        .reduce((acc, [, val]) => acc + val, 0);
+      const resultadoSimulado = dadosAgf.receita - despesaSimulada;
+      const margemSimulada = dadosAgf.receita > 0 ? (resultadoSimulado / dadosAgf.receita) * 100 : 0;
+      const ganhoMargem = margemSimulada - margemLucro;
 
-      if (!empresaMaeId) {
-        console.error("ID da Empresa Mãe não encontrado!");
-        // Você pode mostrar uma mensagem de erro na tela aqui
-        return;
-      }
+      return {
+        nome: agf.nome,
+        receita: dadosAgf.receita,
+        despesaTotal,
+        resultado,
+        margemLucro,
+        objetos: dadosAgf.objetos,
+        despesasDetalhadas: dadosAgf.despesas,
+        margemLucroReal: margemLucro,
+        ganhoMargem: ganhoMargem > 0 ? ganhoMargem : 0,
+      };
+    });
 
-      try {
-        // Você precisará criar um endpoint no Bubble que retorne os dados neste formato
-        // const response = await fetch(`https://sistema-de-gesto---agf.bubbleapps.io/version-test/api/1.1/wf/dashboard-data?empresaMaeId=${empresaMaeId}&mes=${mesSelecionado}&ano=${anoSelecionado}` );
-        // const dataFromApi = await response.json();
-        // setDados(dataFromApi.response); // A estrutura da resposta do Bubble pode variar
-        
-        // Por enquanto, usamos os dados mockados
-        console.log(`Buscando dados para Empresa: ${empresaMaeId}, Mês: ${mesSelecionado}, Ano: ${anoSelecionado}`);
-        setDados(mockApiData);
-
-      } catch (error) {
-        console.error("Erro ao buscar dados da API:", error);
-      }
+    const totaisGerais = {
+      receita: totaisPorAgf.reduce((acc, agf) => acc + agf.receita, 0),
+      despesa: totaisPorAgf.reduce((acc, agf) => acc + agf.despesaTotal, 0),
+      resultado: totaisPorAgf.reduce((acc, agf) => acc + agf.resultado, 0),
+      objetos: totaisPorAgf.reduce((acc, agf) => acc + agf.objetos, 0),
     };
+    totaisGerais.margem = totaisGerais.receita > 0 ? (totaisGerais.resultado / totaisGerais.receita) * 100 : 0;
 
-    fetchDados();
-  }, [agfSelecionada, mesSelecionado, anoSelecionado]);
+    return { totaisPorAgf, totaisGerais };
+  }, [categoriasExcluidas]);
 
-  // Memoize os dados filtrados para evitar recálculos desnecessários
-  const dadosFiltrados = useMemo(() => {
-    if (agfSelecionada === 'todas') {
-      return dados;
-    }
-    const agfData = dados.comparativoAgfs.find(agf => agf.nome === agfSelecionada);
-    if (!agfData) return dados; // Retorna todos se não encontrar
+  const handleCategoriaToggle = (categoria: string) => {
+    setCategoriasExcluidas(prev => 
+      prev.includes(categoria) ? prev.filter(c => c !== categoria) : [...prev, categoria]
+    );
+  };
 
-    return {
-      ...dados,
-      cards: {
-        receitaTotal: agfData.receita,
-        resultadoTotal: agfData.resultado,
-        despesaTotal: agfData.despesa,
-        objetosTratados: dados.objetosPorAgf.find(a => a.nome === agfSelecionada)?.quantidade || 0,
-        margemLucroMedia: agfData.margemLucro,
-      }
-    }
-  }, [dados, agfSelecionada]);
-  
-  const CORES_GRAFICOS = {
-    receita: '#3b82f6', // Azul
-    despesa: '#ef4444', // Vermelho
-    resultado: '#22c55e', // Verde
-    margem: '#f97316', // Laranja
-    veiculos: ['#BF6550', '#A65A46', '#8C4F3D']
+  const CORES = {
+    resultado: '#48DB8A',
+    receita: '#4AA8FF',
+    despesa: '#E74C3C',
+    objetos: '#F2C14E', // Amarelo
+    linhaEvolucao: '#F2935C',
+    folhaPagamento: '#4472CA',
+    pizza: ['#F2935C', '#BF6550', '#4472CA', '#48DB8A'],
   };
 
   return (
-    <main className="p-4 md:p-8 font-poppins">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold text-white">Dashboard de Gestão</h1>
-        <p className="text-text/80">Análise comparativa de franquias AGF.</p>
-      </header>
+    <div className="min-h-screen bg-gradient-to-br from-[#010326] to-[#010440] text-[#E9F2FF] font-poppins p-4 md:p-8">
+      <main className="max-w-7xl mx-auto">
+        {/* --- CABEÇALHO E FILTROS --- */}
+        <header className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+          <select value={agfSelecionada} onChange={(e) => setAgfSelecionada(e.target.value)} className="bg-[#1F1F3C] border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary w-full">
+            <option value="todas">Todas as AGFs</option>
+            {mockApiData.agfs.map(agf => <option key={agf.id} value={agf.nome}>{agf.nome}</option>)}
+          </select>
+          <select value={mesSelecionado} onChange={(e) => setMesSelecionado(Number(e.target.value))} className="bg-[#1F1F3C] border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary w-full">
+            {Array.from({length: 12}, (_, i) => <option key={i+1} value={i+1}>{new Date(0, i).toLocaleString('pt-BR', { month: 'long' })}</option>)}
+          </select>
+          <select value={anoSelecionado} onChange={(e) => setAnoSelecionado(Number(e.target.value))} className="bg-[#1F1F3C] border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary w-full">
+            {[2023, 2024, 2025].map(ano => <option key={ano} value={ano}>{ano}</option>)}
+          </select>
+        </header>
 
-      {/* Filtros */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-        {/* Filtro AGF */}
-        <select value={agfSelecionada} onChange={(e) => setAgfSelecionada(e.target.value)} className="bg-background-start border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary">
-          <option value="todas">Todas as AGFs</option>
-          {dados.comparativoAgfs.map(agf => <option key={agf.nome} value={agf.nome}>{agf.nome}</option>)}
-        </select>
-        {/* Filtro Mês */}
-        <select value={mesSelecionado} onChange={(e) => setMesSelecionado(Number(e.target.value))} className="bg-background-start border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary">
-          {Array.from({length: 12}, (_, i) => <option key={i+1} value={i+1}>{new Date(0, i).toLocaleString('pt-BR', { month: 'long' })}</option>)}
-        </select>
-        {/* Filtro Ano */}
-        <select value={anoSelecionado} onChange={(e) => setAnoSelecionado(Number(e.target.value))} className="bg-background-start border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary">
-          {[2023, 2024, 2025].map(ano => <option key={ano} value={ano}>{ano}</option>)}
-        </select>
-      </div>
+        {/* --- CARDS PRINCIPAIS --- */}
+        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+          <Card title="Resultado" value={dadosProcessados.totaisGerais.resultado.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} subValue={`${dadosProcessados.totaisGerais.margem.toFixed(1)}%`} borderColor={CORES.resultado} valueColor="text-success" />
+          <Card title="Receita Total" value={dadosProcessados.totaisGerais.receita.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} borderColor={CORES.receita} valueColor="text-info" />
+          <Card title="Despesa Total" value={dadosProcessados.totaisGerais.despesa.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} borderColor={CORES.despesa} valueColor="text-destructive" />
+          <Card title="Objetos Tratados" value={dadosProcessados.totaisGerais.objetos.toLocaleString('pt-BR')} borderColor={CORES.objetos} valueColor="text-yellow-400" />
+        </section>
 
-      {/* Cards Principais */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
-        <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm"><h3 className="text-sm text-text/80">Receita Total</h3><p className="text-2xl font-bold text-info">{dadosFiltrados.cards.receitaTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p></div>
-        <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm"><h3 className="text-sm text-text/80">Despesa Total</h3><p className="text-2xl font-bold text-destructive">{dadosFiltrados.cards.despesaTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p></div>
-        <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm"><h3 className="text-sm text-text/80">Resultado Total</h3><p className="text-2xl font-bold text-success">{dadosFiltrados.cards.resultadoTotal.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</p></div>
-        <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm"><h3 className="text-sm text-text/80">Objetos Tratados</h3><p className="text-2xl font-bold text-primary">{dadosFiltrados.cards.objetosTratados.toLocaleString('pt-BR')}</p></div>
-        <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm"><h3 className="text-sm text-text/80">Margem de Lucro</h3><p className="text-2xl font-bold text-secondary">{dadosFiltrados.cards.margemLucroMedia.toFixed(1)}%</p></div>
-      </div>
-
-      {/* Gráficos */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Gráfico de Evolução do Resultado */}
-        <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm">
-          <h3 className="font-bold mb-4">Evolução do Resultado ({agfSelecionada === 'todas' ? 'Geral' : agfSelecionada})</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={dados.resultadoEvolucao}>
+        {/* --- GRÁFICO DE EVOLUÇÃO --- */}
+        <section className="mb-8">
+          <ChartContainer title="Resultado ao Longo do Tempo">
+            <LineChart data={mockApiData.evolucaoResultadoGeral}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="mes" stroke="#E9F2FF" />
-              <YAxis stroke="#E9F2FF" />
-              <Tooltip contentStyle={{ backgroundColor: '#010440', border: '1px solid #F2935C' }} />
-              <Legend />
-              <Line type="monotone" dataKey="resultado" stroke={CORES_GRAFICOS.resultado} strokeWidth={2} />
+              <YAxis stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', notation: 'compact' }).format(value)} />
+              <Tooltip content={<CustomTooltip />} />
+              <Line type="monotone" dataKey="resultado" stroke={CORES.linhaEvolucao} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 8 }} />
             </LineChart>
-          </ResponsiveContainer>
-        </div>
+          </ChartContainer>
+        </section>
 
-        {/* Gráfico Comparativo de Receita */}
-        <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm">
-          <h3 className="font-bold mb-4">Comparativo de Receita por AGF (Mês/Ano)</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={dados.comparativoAgfs}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
-              <XAxis dataKey="nome" stroke="#E9F2FF" />
-              <YAxis stroke="#E9F2FF" />
-              <Tooltip contentStyle={{ backgroundColor: '#010440', border: '1px solid #F2935C' }} />
-              <Bar dataKey="receita" fill={CORES_GRAFICOS.receita} />
+        {/* --- GRÁFICOS COMPARATIVOS --- */}
+        <section className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+          <ChartContainer title="Comparativo de Receita">
+            <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical">
+              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact' }).format(value)} />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="receita" fill={CORES.receita} name="Receita" />
             </BarChart>
-          </ResponsiveContainer>
-        </div>
+          </ChartContainer>
+          <ChartContainer title="Comparativo de Despesa">
+            <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical">
+              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact' }).format(value)} />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="despesaTotal" fill={CORES.despesa} name="Despesa" />
+            </BarChart>
+          </ChartContainer>
+          <ChartContainer title="Comparativo de Resultado">
+            <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical">
+              <XAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact' }).format(value)} />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} />
+              <Tooltip content={<CustomTooltip />} />
+              <Bar dataKey="resultado" fill={CORES.resultado} name="Resultado" />
+            </BarChart>
+          </ChartContainer>
+          <ChartContainer title="Comparativo de Margem de Lucro (%)">
+            <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical">
+              <XAxis type="number" stroke="#E9F2FF" />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" width={80} />
+              <Tooltip formatter={(value: number) => `${value.toFixed(1)}%`} />
+              <Bar dataKey="margemLucro" fill={CORES.linhaEvolucao} name="Margem" />
+            </BarChart>
+          </ChartContainer>
+        </section>
         
-        {/* Gráfico de Pizza - Despesas com Veículos */}
-        <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm">
-          <h3 className="font-bold mb-4">Total Gasto em Veículos por AGF</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie data={dados.despesasPorCategoria} dataKey="Veículos" nameKey="nome" cx="50%" cy="50%" outerRadius={100} label>
-                {dados.despesasPorCategoria.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={CORES_GRAFICOS.veiculos[index % CORES_GRAFICOS.veiculos.length]} />
-                ))}
-              </Pie>
-              <Tooltip contentStyle={{ backgroundColor: '#010440', border: '1px solid #F2935C' }} />
-              <Legend />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
+        {/* --- GRÁFICOS DE DESPESA ESPECÍFICA --- */}
+        <section className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+            <ChartContainer title="Folha de Pagamento">
+                <BarChart data={dadosProcessados.totaisPorAgf}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
+                    <XAxis dataKey="nome" stroke="#E9F2FF" />
+                    <YAxis stroke="#E9F2FF" tickFormatter={(value) => new Intl.NumberFormat('pt-BR', { notation: 'compact' }).format(value)} />
+                    <Tooltip content={<CustomTooltip />} />
+                    <Bar dataKey="despesasDetalhadas.folha_pagamento" fill={CORES.folhaPagamento} name="Folha de Pagamento" />
+                </BarChart>
+            </ChartContainer>
+            <ChartContainer title="Total Gasto em Veículos por AGF">
+                <PieChart>
+                    <Pie data={dadosProcessados.totaisPorAgf} dataKey="despesasDetalhadas.veiculos" nameKey="nome" cx="50%" cy="50%" outerRadius={100} label>
+                        {dadosProcessados.totaisPorAgf.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={CORES.pizza[index % CORES.pizza.length]} />
+                        ))}
+                    </Pie>
+                    <Tooltip formatter={(value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} />
+                    <Legend />
+                </PieChart>
+            </ChartContainer>
+        </section>
 
-        {/* Tabela de Despesas por Categoria */}
-        <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm lg:col-span-2">
-            <h3 className="font-bold mb-4">Despesas por Categoria e AGF</h3>
-            <div className="overflow-x-auto">
-                <table className="w-full text-left">
+        {/* --- TABELAS --- */}
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+            <div className="lg:col-span-1 bg-[#1F1F3C] p-4 rounded-lg">
+                <h3 className="font-bold mb-4 text-text">Objetos Tratados por AGF</h3>
+                <table className="w-full text-left text-sm">
                     <thead>
-                        <tr className="border-b border-primary/50">
+                        <tr className="border-b border-primary/20">
                             <th className="p-2">AGF</th>
-                            <th className="p-2 text-right">Folha de Pagamento</th>
-                            <th className="p-2 text-right">Veículos</th>
-                            <th className="p-2 text-right">Aluguel</th>
-                            <th className="p-2 text-right">Outros</th>
+                            <th className="p-2 text-right">Quantidade</th>
                         </tr>
                     </thead>
                     <tbody>
-                        {dados.despesasPorCategoria.map((item) => (
-                            <tr key={item.nome} className="border-b border-white/10">
-                                <td className="p-2 font-semibold">{item.nome}</td>
-                                <td className="p-2 text-right text-destructive/90">{item['Folha de Pagamento'].toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
-                                <td className="p-2 text-right text-destructive/90">{item['Veículos'].toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
-                                <td className="p-2 text-right text-destructive/90">{item['Aluguel'].toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
-                                <td className="p-2 text-right text-destructive/90">{item['Outros'].toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</td>
+                        {dadosProcessados.totaisPorAgf.map(agf => (
+                            <tr key={agf.nome} className="border-b border-white/10">
+                                <td className="p-2 font-semibold">{agf.nome}</td>
+                                <td className="p-2 text-right">{agf.objetos.toLocaleString('pt-BR')}</td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
             </div>
-        </div>
-      </div>
-    </main>
+            <div className="lg:col-span-2 bg-[#1F1F3C] p-4 rounded-lg">
+                <h3 className="font-bold mb-4 text-text">Despesas por Categoria</h3>
+                <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm">
+                        <thead>
+                            <tr className="border-b border-primary/20">
+                                <th className="p-2">AGF</th>
+                                {mockApiData.categoriasDespesa.map(cat => <th key={cat} className="p-2 text-right capitalize">{cat.replace('_', ' ')}</th>)}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {dadosProcessados.totaisPorAgf.map(agf => (
+                                <tr key={agf.nome} className="border-b border-white/10">
+                                    <td className="p-2 font-semibold">{agf.nome}</td>
+                                    {mockApiData.categoriasDespesa.map(cat => (
+                                        <td key={cat} className="p-2 text-right text-destructive/90">
+                                            {(agf.despesasDetalhadas[cat as keyof typeof agf.despesasDetalhadas] || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 0 })}
+                                        </td>
+                                    ))}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        {/* --- SIMULAÇÃO DE MARGEM DE LUCRO --- */}
+        <section className="bg-[#1F1F3C] p-4 rounded-lg">
+            <h3 className="font-bold mb-4 text-text">Simulação de Margem de Lucro</h3>
+            <div className="mb-4">
+                <p className="text-sm text-text/80 mb-2">Selecione as despesas para remover do cálculo:</p>
+                <div className="flex flex-wrap gap-2">
+                    {mockApiData.categoriasDespesa.map(cat => (
+                        <button key={cat} onClick={() => handleCategoriaToggle(cat)} className={`px-3 py-1 text-xs rounded-full transition-colors ${categoriasExcluidas.includes(cat) ? 'bg-primary text-white' : 'bg-gray-600/50 text-text/80'}`}>
+                            {cat.replace('_', ' ')}
+                        </button>
+                    ))}
+                </div>
+            </div>
+            <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={dadosProcessados.totaisPorAgf} layout="horizontal">
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
+                        <XAxis type="category" dataKey="nome" stroke="#E9F2FF" />
+                        <YAxis type="number" stroke="#E9F2FF" tickFormatter={(value) => `${value.toFixed(0)}%`} />
+                        <Tooltip formatter={(value: number, name: string) => [`${value.toFixed(1)}%`, name === 'margemLucroReal' ? 'Margem Real' : 'Ganho de Margem']} />
+                        <Legend />
+                        <Bar dataKey="margemLucroReal" stackId="a" fill={CORES.receita} name="Margem Real" />
+                        <Bar dataKey="ganhoMargem" stackId="a" fill={CORES.resultado} name="Ganho de Margem" />
+                    </BarChart>
+                </ResponsiveContainer>
+            </div>
+        </section>
+      </main>
+    </div>
   );
 }
