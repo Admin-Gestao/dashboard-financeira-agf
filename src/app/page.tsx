@@ -4,7 +4,7 @@ import { useState, useMemo, ReactElement, useRef, useEffect } from 'react';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LabelList } from 'recharts';
 import { ChevronDown } from 'lucide-react';
 
-// --- DADOS MOCKADOS V4.4 (variação por Mês/Ano para testar filtros) ---
+// --- DADOS MOCKADOS V4.4 (variação por Mês/Ano para testar filtros ) ---
 const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
   const data: any = {};
   for (const ano of anos) {
@@ -131,6 +131,27 @@ const MultiSelectFilter = ({
 
 // --- PÁGINA PRINCIPAL ---
 export default function DashboardPage() {
+  // --- NOVO CÓDIGO INSERIDO ---
+  // State para armazenar o ID da empresa mãe vindo da URL
+  const [empresaId, setEmpresaId] = useState<string | null>(null);
+
+  // Hook para ler o parâmetro da URL quando o componente montar
+  useEffect(() => {
+    // Este código só roda no navegador do usuário (client-side)
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const id = params.get('empresa_id'); // O nome do parâmetro que definimos no iframe
+      if (id) {
+        setEmpresaId(id);
+        // Você pode verificar no console do navegador se o ID foi capturado
+        console.log("ID da Empresa Mãe recebido do Bubble:", id);
+      } else {
+        console.log("Nenhum ID de empresa encontrado na URL. Mostrando dados de exemplo.");
+      }
+    }
+  }, []); // O array vazio [] garante que isso rode apenas uma vez quando a página carrega.
+  // --- FIM DO NOVO CÓDIGO ---
+
   // Guardamos IDs de AGF, e números de mês/ano
   const [agfsSelecionadas, setAgfsSelecionadas] = useState<string[]>([]);
   const [mesesSelecionados, setMesesSelecionados] = useState<number[]>([]);
@@ -243,6 +264,7 @@ export default function DashboardPage() {
           <MultiSelectFilter name="Ano" options={anoList.map((a) => ({ id: a, nome: a.toString() }))} selected={anosSelecionados} onSelect={(id) => handleMultiSelect(setAnosSelecionados, id)} />
         </header>
 
+        {/* O resto do seu código JSX continua aqui sem alterações... */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           <Card title="Resultado" value={currencyFormatter(dadosProcessados.totaisGerais.resultado)} borderColor={CORES.resultado} valueColor="text-success" />
           <Card title="Receita Total" value={currencyFormatter(dadosProcessados.totaisGerais.receita)} borderColor={CORES.receita} valueColor="text-info" />
@@ -457,4 +479,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-
