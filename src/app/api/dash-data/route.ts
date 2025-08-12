@@ -44,14 +44,37 @@ function parseMes(v: any): number {
   return MESES[s] ?? 0;
 }
 
+// valor "17.827,51" -> 17827.51
+function parseValorBR(v: any): number {
+  if (typeof v === 'number') return v;
+  if (typeof v !== 'string') return 0;
+  const s = v
+    .toString()
+    .replace(/\s+/g,'')
+    .replace(/[R$\u00A0]/g,'')
+    .replace(/\./g,'')       // remove milhar
+    .replace(',', '.');      // vírgula -> ponto
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
+// "04/2025" | "4/2025" → { mes:4, ano:2025 } (senão null)
+function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
+  if (typeof s !== 'string') return null;
+  const m = s.match(/^\s*([01]?\d)\s*\/\s*(\d{4})\s*$/);
+  if (!m) return null;
+  const mes = Number(m[1]);
+  const ano = Number(m[2]);
+  if (mes>=1 && mes<=12 && ano>1900) return { mes, ano };
+  return null;
+}
+
 // normaliza categorias vindas variadas para chaves fixas do frontend
 function normalizeCategoria(input: any): string {
   const s = String(input || '').toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .trim();
 
-  // nomes oficiais no Bubble: "Folha Pgto", "Veiculos", "Telefone", "Comissões", "Imposto",
-  // "Aluguel", "Honorarios", "Pitney", "Extras"
   if (s.includes('alug')) return 'aluguel';
   if (s.includes('comis')) return 'comissoes';
   if (s.includes('honor')) return 'honorarios';
@@ -94,7 +117,7 @@ export async function GET(req: Request) {
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) LançamentoMensal (por Empresa Mãe)
+    // 2) LançamentoMensal
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
     const lmRes = await bubbleGet<{
       _id: string;
@@ -107,8 +130,10 @@ export async function GET(req: Request) {
       resultado_extra?: number;
     }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
 
-    // índice por ID do LM → dados base
+    // índices: por id e por (ano-mes-agfNome)
     const lmIndex = new Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>();
+    const lmIndexByKey = new Map<string, string>(); // key -> lmId
+
     for (const lm of lmRes.response.results) {
       const ano = parseAno((lm as any).Ano);
       const mes = parseMes((lm as any).Mês);
@@ -117,11 +142,16 @@ export async function GET(req: Request) {
         agfIdToNome.get(agfId || '') ||
         (typeof lm.AGF === 'object' ? ((lm.AGF as any)['Nome da AGF'] || (lm.AGF as any).nome || (lm.AGF as any).name) : '') ||
         agfId || 'AGF';
-      if (lm._id) lmIndex.set(lm._id, { ano, mes, agfId, agfNome });
+      if (lm._id) {
+        lmIndex.set(lm._id, { ano, mes, agfId, agfNome });
+        if (ano && mes) {
+          lmIndexByKey.set(`${ano}-${mes}-${agfNome}`, lm._id);
+        }
+      }
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) SubConta (APENAS por AGF IN [ids]) — NÃO usa "Lançamento Mensal" no filtro!
+    // 3) SubConta (por AGF)
     const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
     const scRes = await bubbleGet<{
       _id: string;
@@ -129,30 +159,29 @@ export async function GET(req: Request) {
       AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
       LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
       Categoria?: string | { _id: string; Nome?: string; name?: string };
-      Valor: number;
+      Valor: number | string;
     }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scCons}`);
 
-    // 4) Balancete (filtra por Lançamento Mensal IN [ids]) — aqui o campo existe
+    // 4) Balancete (por LM)
     const balCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
     const balRes = await bubbleGet<{
       _id: string;
       'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
       Quantidade?: number;
-      Remuneração?: number;
-      'Tipo de objeto'?: string;
     }>(`/api/1.1/obj/${enc('Balancete')}?limit=2000&constraints=${balCons}`);
 
-    // --------- AGREGAÇÃO PARA O FRONT ----------
+    // --------- AGREGAÇÃO ----------
+
     const dados: Record<number, Record<number, Record<string, {
       receita: number;
       objetos: number;
       despesas: Record<string, number>;
     }>>> = {};
 
-    // fallback de despesa total por LM (usaremos se não houver SubContas)
+    // fallback despesa total por LM
     const lmFallbackDespesa = new Map<string, { ano: number; mes: number; agfNome: string; total: number }>();
 
-    // 4.1) Receita (LançamentoMensal) + fallback de despesa
+    // 4.1) Receita + fallback bruto
     for (const lm of lmRes.response.results) {
       const meta = lmIndex.get(lm._id);
       if (!meta) continue;
@@ -197,7 +226,8 @@ export async function GET(req: Request) {
     }
 
     // 4.3) Despesas por categoria (SubConta)
-    const lmCobertoPorSubconta = new Set<string>();
+    const lmCobertoPorSubconta = new Set<string>();        // por id
+    const lmCobertoPorChave = new Set<string>();           // por (ano-mes-agf)
 
     for (const sc of scRes.response.results) {
       let ano = parseAno((sc as any).Ano);
@@ -207,29 +237,34 @@ export async function GET(req: Request) {
       let agfNome = 'AGF';
       let lmId: string | undefined;
 
-      // preferir dados do LM embutido (não filtramos por isso no Bubble!)
-      if ((!ano || !mes) || !(sc as any).AGF) {
-        if (typeof lmField === 'string') {
+      // se LM vier como objeto/id
+      if (typeof lmField === 'string') {
+        // pode ser id OU "04/2025"
+        if (lmIndex.has(lmField)) {
           lmId = lmField;
-          const meta = lmIndex.get(lmField);
-          if (meta) {
-            ano = meta.ano || ano;
-            mes = meta.mes || mes;
-            agfNome = meta.agfNome || agfNome;
+          const meta = lmIndex.get(lmField)!;
+          ano = meta.ano || ano;
+          mes = meta.mes || mes;
+          agfNome = meta.agfNome || agfNome;
+        } else {
+          const parsed = parseMesAnoStr(lmField);
+          if (parsed) {
+            mes = mes || parsed.mes;
+            ano = ano || parsed.ano;
           }
-        } else if (typeof lmField === 'object' && lmField) {
-          lmId = (lmField as any)._id;
-          ano = parseAno((lmField as any).Ano) || ano;
-          mes = parseMes((lmField as any).Mês) || mes;
-          const aid =
-            typeof (lmField as any).AGF === 'string'
-              ? (lmField as any).AGF
-              : (lmField as any).AGF?._id;
-          agfNome = agfIdToNome.get(aid || '') || agfNome;
         }
+      } else if (typeof lmField === 'object' && lmField) {
+        lmId = (lmField as any)._id;
+        ano = parseAno((lmField as any).Ano) || ano;
+        mes = parseMes((lmField as any).Mês) || mes;
+        const aid =
+          typeof (lmField as any).AGF === 'string'
+            ? (lmField as any).AGF
+            : (lmField as any).AGF?._id;
+        agfNome = agfIdToNome.get(aid || '') || agfNome;
       }
 
-      // AGF direto no registro (se houver) tem prioridade
+      // AGF direto no registro tem prioridade
       if ((sc as any).AGF) {
         const agfField = (sc as any).AGF;
         const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
@@ -243,7 +278,6 @@ export async function GET(req: Request) {
 
       if (!ano || !mes) continue;
 
-      // Categoria
       const rawCat = (() => {
         const c = (sc as any).Categoria;
         if (!c) return '';
@@ -256,17 +290,24 @@ export async function GET(req: Request) {
       if (!dados[ano][mes]) dados[ano][mes] = {};
       if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesas: {} };
 
-      const val = Number((sc as any).Valor || 0);
+      const val = parseValorBR((sc as any).Valor);
       dados[ano][mes][agfNome].despesas[categoria] =
         (dados[ano][mes][agfNome].despesas[categoria] || 0) + val;
 
-      if (lmId) lmCobertoPorSubconta.add(lmId);
+      // marca cobertura do LM
+      if (lmId) {
+        lmCobertoPorSubconta.add(lmId);
+      }
+      const key = `${ano}-${mes}-${agfNome}`;
+      lmCobertoPorChave.add(key);
     }
 
     // 4.4) Fallback de despesa (LM sem SubContas) → soma em "extras"
     lmFallbackDespesa.forEach((info, lmId) => {
-      if (lmCobertoPorSubconta.has(lmId)) return; // já detalhado por categoria
       const { ano, mes, agfNome, total } = info;
+      const key = `${ano}-${mes}-${agfNome}`;
+      if (lmCobertoPorSubconta.has(lmId)) return; // já coberto por id
+      if (lmCobertoPorChave.has(key)) return;     // já coberto por (ano,mes,agf)
 
       if (!dados[ano]) dados[ano] = {};
       if (!dados[ano][mes]) dados[ano][mes] = {};
@@ -276,12 +317,12 @@ export async function GET(req: Request) {
         (dados[ano][mes][agfNome].despesas['extras'] || 0) + Number(total || 0);
     });
 
-    // categorias definitivas na ordem desejada
+    // categorias na ordem desejada
     const categoriasDespesa = [
       'aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'
     ];
 
-    // garante que todas existem no objeto (evita NaN ao somar)
+    // garante chaves e números
     for (const anoStr of Object.keys(dados)) {
       const ano = Number(anoStr);
       for (const mesStr of Object.keys(dados[ano])) {
