@@ -50,6 +50,8 @@ function normalizeCategoria(input: any): string {
     .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .trim();
 
+  // nomes oficiais no Bubble: "Folha Pgto", "Veiculos", "Telefone", "Comissões", "Imposto",
+  // "Aluguel", "Honorarios", "Pitney", "Extras"
   if (s.includes('alug')) return 'aluguel';
   if (s.includes('comis')) return 'comissoes';
   if (s.includes('honor')) return 'honorarios';
@@ -57,11 +59,7 @@ function normalizeCategoria(input: any): string {
   if (s.includes('telef')) return 'telefone';
   if (s.includes('veic')) return 'veiculos';
   if (s.includes('impost')) return 'impostos';
-  // folha pgto / folha pagamento
-  if (s.includes('folha')) return 'folha_pagamento';
-  if (s.includes('pgto')) return 'folha_pagamento';
-  if (s.includes('pagament')) return 'folha_pagamento';
-
+  if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
   if (s.includes('extra')) return 'extras';
   return 'extras';
 }
@@ -76,11 +74,6 @@ async function bubbleGet<T>(path: string) {
     throw new Error(`Bubble GET ${path} -> ${res.status} ${body}`);
   }
   return (await res.json()) as { response: { results: T[]; count?: number } };
-}
-
-// helper p/ ler o campo "Lançamento Mensal" de vários jeitos
-function readLmField(obj: any): any {
-  return obj?.['Lançamento Mensal'] ?? obj?.['LançamentoMensal'] ?? obj?.LançamentoMensal ?? obj?.lançamento_mensal ?? undefined;
 }
 
 export async function GET(req: Request) {
@@ -101,7 +94,7 @@ export async function GET(req: Request) {
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) LançamentoMensal (filtra por Empresa Mãe)
+    // 2) LançamentoMensal (por Empresa Mãe)
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
     const lmRes = await bubbleGet<{
       _id: string;
@@ -128,36 +121,18 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) SubConta — BUSCA DUPLA e UNE RESULTADOS
-    // 3.1 por AGF
-    const scByAgfCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
-    const scByAgfRes = await bubbleGet<{
+    // 3) SubConta (APENAS por AGF IN [ids]) — NÃO usa "Lançamento Mensal" no filtro!
+    const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
+    const scRes = await bubbleGet<{
       _id: string;
       Ano?: any; Mês?: any;
       AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
-      'Lançamento Mensal'?: any; 'LançamentoMensal'?: any;
+      LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
       Categoria?: string | { _id: string; Nome?: string; name?: string };
       Valor: number;
-    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scByAgfCons}`);
+    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scCons}`);
 
-    // 3.2 por Lançamento Mensal (nome correto com espaço)
-    const scByLmCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
-    const scByLmRes = await bubbleGet<{
-      _id: string;
-      Ano?: any; Mês?: any;
-      AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
-      'Lançamento Mensal'?: any; 'LançamentoMensal'?: any;
-      Categoria?: string | { _id: string; Nome?: string; name?: string };
-      Valor: number;
-    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scByLmCons}`);
-
-    // Une e remove duplicados por _id
-    const scMap = new Map<string, any>();
-    for (const r of scByAgfRes.response.results) scMap.set((r as any)._id, r);
-    for (const r of scByLmRes.response.results) scMap.set((r as any)._id, r);
-    const scMerged = Array.from(scMap.values());
-
-    // 4) Balancete (filtra por Lançamento Mensal IN [ids])
+    // 4) Balancete (filtra por Lançamento Mensal IN [ids]) — aqui o campo existe
     const balCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
     const balRes = await bubbleGet<{
       _id: string;
@@ -174,10 +149,10 @@ export async function GET(req: Request) {
       despesas: Record<string, number>;
     }>>> = {};
 
-    // fallback de despesa total por LM (caso não haja subcontas)
+    // fallback de despesa total por LM (usaremos se não houver SubContas)
     const lmFallbackDespesa = new Map<string, { ano: number; mes: number; agfNome: string; total: number }>();
 
-    // 4.1) Receita (LM) + fallback total_despesa
+    // 4.1) Receita (LançamentoMensal) + fallback de despesa
     for (const lm of lmRes.response.results) {
       const meta = lmIndex.get(lm._id);
       if (!meta) continue;
@@ -196,7 +171,7 @@ export async function GET(req: Request) {
 
     // 4.2) Objetos (Balancete)
     for (const b of balRes.response.results) {
-      const lmField = (b as any)['Lançamento Mensal'] ?? (b as any)['LançamentoMensal'];
+      const lmField = (b as any)['Lançamento Mensal'] || (b as any)['LançamentoMensal'];
       let ano = 0, mes = 0, agfNome = 'AGF';
 
       if (typeof lmField === 'string') {
@@ -221,19 +196,18 @@ export async function GET(req: Request) {
       dados[ano][mes][agfNome].objetos += Number((b as any).Quantidade || 0);
     }
 
-    // 4.3) Despesas por categoria (SubConta) — cobre casos sem AGF usando LM
+    // 4.3) Despesas por categoria (SubConta)
     const lmCobertoPorSubconta = new Set<string>();
-    const categoriasNormalizadasEncontradas = new Set<string>();
 
-    for (const sc of scMerged) {
+    for (const sc of scRes.response.results) {
       let ano = parseAno((sc as any).Ano);
       let mes = parseMes((sc as any).Mês);
 
-      const lmField = readLmField(sc);
+      const lmField = (sc as any)['LançamentoMensal'] || (sc as any)['Lançamento Mensal'];
       let agfNome = 'AGF';
       let lmId: string | undefined;
 
-      // preferir dados do LM (se string, usa índice)
+      // preferir dados do LM embutido (não filtramos por isso no Bubble!)
       if ((!ano || !mes) || !(sc as any).AGF) {
         if (typeof lmField === 'string') {
           lmId = lmField;
@@ -269,14 +243,14 @@ export async function GET(req: Request) {
 
       if (!ano || !mes) continue;
 
-      const rawCat = ((): any => {
+      // Categoria
+      const rawCat = (() => {
         const c = (sc as any).Categoria;
         if (!c) return '';
         if (typeof c === 'string') return c;
         return c.Nome || c.name || '';
       })();
       const categoria = normalizeCategoria(rawCat);
-      categoriasNormalizadasEncontradas.add(categoria);
 
       if (!dados[ano]) dados[ano] = {};
       if (!dados[ano][mes]) dados[ano][mes] = {};
@@ -300,8 +274,6 @@ export async function GET(req: Request) {
 
       dados[ano][mes][agfNome].despesas['extras'] =
         (dados[ano][mes][agfNome].despesas['extras'] || 0) + Number(total || 0);
-
-      categoriasNormalizadasEncontradas.add('extras');
     });
 
     // categorias definitivas na ordem desejada
