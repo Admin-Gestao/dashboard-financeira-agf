@@ -1,829 +1,279 @@
-"use client";
+// src/app/api/dash-data/route.ts
+import { NextResponse } from 'next/server';
 
-import { useState, useMemo, ReactElement, useRef, useEffect } from "react";
-import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  LabelList,
-} from "recharts";
-import { ChevronDown } from "lucide-react";
+const BASE = process.env.BUBBLE_BASE_URL!;
+const KEY = process.env.BUBBLE_API_KEY!;
 
-// --- DADOS MOCKADOS V4.4 (variação por Mês/Ano para testar filtros ) ---
-const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
-  const data: any = {};
-  for (const ano of anos) {
-    data[ano] = {};
-    for (const mes of meses) {
-      data[ano][mes] = {};
-      for (const agf of agfs) {
-        const baseReceita = 50000 + Math.random() * 25000;
-        const variacao =
-          (ano - 2023) * 0.08 + (mes - 1) * 0.02 + (Math.random() - 0.5) * 0.12;
-        const receita = baseReceita * (1 + variacao);
-        data[ano][mes][agf] = {
-          receita,
-          objetos: Math.floor(
-            (receita / 4) * (1 + (Math.random() - 0.5) * 0.1)
-          ),
-          despesas: {
-            aluguel: receita * 0.08,
-            comissoes: receita * 0.05,
-            extras: receita * 0.02,
-            folha_pagamento: receita * 0.35,
-            impostos: receita * 0.1,
-            veiculos: receita * 0.12,
-            telefone: receita * 0.01,
-          },
-        };
-      }
-    }
+function enc(s: string) { return encodeURIComponent(s); }
+function constraints(obj: any) { return encodeURIComponent(JSON.stringify(obj)); }
+
+// mapeia "jan", "janeiro" → 1, etc.
+const MESES: Record<string, number> = {
+  '1':1,'01':1,'jan':1,'janeiro':1,
+  '2':2,'02':2,'fev':2,'fevereiro':2,
+  '3':3,'03':3,'mar':3,'março':3,'marco':3,
+  '4':4,'04':4,'abr':4,'abril':4,
+  '5':5,'05':5,'mai':5,'maio':5,
+  '6':6,'06':6,'jun':6,'junho':6,
+  '7':7,'07':7,'jul':7,'julho':7,
+  '8':8,'08':8,'ago':8,'agosto':8,
+  '9':9,'09':9,'set':9,'setembro':9,
+  '10':10,'out':10,'outubro':10,
+  '11':11,'nov':11,'novembro':11,
+  '12':12,'dez':12,'dezembro':12,
+};
+
+function parseAno(v: any): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const n = Number(v.replace(/[^\d]/g, ''));
+    return Number.isFinite(n) ? n : 0;
   }
-  return data;
-};
+  const s = (v?.display || v?.name || '').toString();
+  const n = Number(s.replace(/[^\d]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+function parseMes(v: any): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const key = v.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    // cobre formatos "04/2025" etc.
+    const mBySlash = key.match(/^(\d{1,2})\s*\/\s*\d{2,4}$/);
+    if (mBySlash) return Number(mBySlash[1]);
+    return MESES[key] ?? Number(v);
+  }
+  const s = (v?.display || v?.name || '').toString().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  return MESES[s] ?? 0;
+}
+// extrai {mes,ano} de strings tipo "04/2025", "4/2025", "abr/2025"
+function parseLMString(str?: string): { mes: number, ano: number } {
+  if (!str) return { mes: 0, ano: 0 };
+  const s = str.toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const m = s.match(/^(\d{1,2})\s*\/\s*(\d{2,4})$/);
+  if (m) return { mes: Number(m[1]), ano: Number(m[2].length === 2 ? '20'+m[2] : m[2]) };
+  const m2 = s.match(/^([a-z]{3,})\s*\/\s*(\d{2,4})$/);
+  if (m2) return { mes: MESES[m2[1]] ?? 0, ano: Number(m2[2].length === 2 ? '20'+m2[2] : m2[2]) };
+  return { mes: 0, ano: 0 };
+}
 
-const agfList = [
-  { id: "cl", nome: "Campo Limpo" },
-  { id: "rp", nome: "Republica" },
-  { id: "sj", nome: "São Jorge" },
-  { id: "jm", nome: "Jd. Marajoara" },
-];
-const anoList = [2023, 2024, 2025];
-const mesList = Array.from({ length: 12 }, (_, i) => i + 1);
-const mockApiData = {
-  agfs: agfList,
-  categoriasDespesa: [
-    "aluguel",
-    "comissoes",
-    "extras",
-    "folha_pagamento",
-    "impostos",
-    "veiculos",
-    "telefone",
-  ],
-  dados: generateMockData(
-    agfList.map((a) => a.nome),
-    anoList,
-    mesList
-  ),
-};
+// normaliza categorias para chaves fixas
+function normalizeCategoria(input: any): string {
+  const s = String(input || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .trim();
+  if (s.includes('alug')) return 'aluguel';
+  if (s.includes('comis')) return 'comissoes';
+  if (s.includes('honor')) return 'honorarios';
+  if (s.includes('pitney')) return 'pitney';
+  if (s.includes('telef')) return 'telefone';
+  if (s.includes('veic'))  return 'veiculos';
+  if (s.includes('impost'))return 'impostos';
+  if (s.includes('folha')) return 'folha_pagamento';
+  if (s.includes('pgto'))  return 'folha_pagamento';
+  if (s.includes('pagament')) return 'folha_pagamento';
+  return 'extras';
+}
 
-// --- COMPONENTES DE UI ---
-const Card = ({
-  title,
-  value,
-  borderColor,
-  valueColor,
-}: {
-  title: string;
-  value: string;
-  borderColor: string;
-  valueColor?: string;
-}) => (
-  <div className="bg-card p-4 rounded-lg border-l-4" style={{ borderColor }}>
-    <h3 className="text-sm text-text/80 font-semibold">{title}</h3>
-    <p className={`text-2xl font-bold ${valueColor || "text-text"}`}>{value}</p>
-  </div>
-);
+async function bubbleGet<T>(path: string) {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Bubble GET ${path} -> ${res.status} ${body}`);
+  }
+  return (await res.json()) as { response: { results: T[]; count?: number } };
+}
 
-const ChartContainer = ({
-  title,
-  children,
-  className = "",
-}: {
-  title: string;
-  children: ReactElement;
-  className?: string;
-}) => (
-  <div className={`bg-card p-4 rounded-lg flex flex-col ${className}`}>
-    <h3 className="font-bold mb-4 text-text">{title}</h3>
-    <div className="flex-grow h-full w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        {children}
-      </ResponsiveContainer>
-    </div>
-  </div>
-);
+export async function GET(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const empresaId = searchParams.get('empresa_id');
+    if (!empresaId) return NextResponse.json({ error: 'empresa_id ausente' }, { status: 400 });
 
-const CustomTooltip = ({ active, payload, label, formatter }: any) => {
-  if (active && payload && payload.length) {
-    return (
-      <div className="bg-background-end p-2 border border-primary/50 rounded-md text-sm">
-        <p className="label font-bold">{`${label}`}</p>
-        {payload.map((pld: any, index: number) => (
-          <p key={index} style={{ color: pld.fill || pld.stroke }}>
-            {`${pld.name}: ${formatter(pld.value)}`}
-          </p>
-        ))}
-      </div>
+    // 1) AGFs
+    const agfCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
+    const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
+      `/api/1.1/obj/${enc('AGF')}?limit=200&constraints=${agfCons}`
     );
-  }
-  return null;
-};
+    const agfs = agfsRes.response.results.map(a => ({
+      id: a._id,
+      nome: (a as any)['Nome da AGF'] || (a as any).nome || (a as any).name || a._id,
+    }));
+    const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
+    const agfIds = agfs.map(a => a.id);
 
-const MultiSelectFilter = ({
-  name,
-  options,
-  selected,
-  onSelect,
-}: {
-  name: string;
-  options: { id: any; nome: string }[];
-  selected: any[];
-  onSelect: (id: any) => void;
-}) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node))
-        setIsOpen(false);
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [ref]);
+    // 2) LançamentoMensal
+    const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
+    const lmRes = await bubbleGet<{
+      _id: string; Ano: any; Mês: any;
+      AGF: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
+      total_receita?: number; total_despesa?: number; resultado_final?: number; resultado_extra?: number;
+    }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
 
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="bg-card border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary w-full flex justify-between items-center"
-      >
-        <span>
-          {name} ({selected.length || "Todos"})
-        </span>
-        <ChevronDown size={16} />
-      </button>
-      {isOpen && (
-        <div className="absolute z-10 top-full mt-1 w-full bg-card border border-primary/50 rounded-md max-h-60 overflow-y-auto">
-          {options.map((option) => (
-            <label
-              key={option.id}
-              className="flex items-center gap-2 p-2 hover:bg-primary/20 cursor-pointer"
-            >
-              <input
-                type="checkbox"
-                checked={selected.includes(option.id)}
-                onChange={() => onSelect(option.id)}
-                className="form-checkbox h-4 w-4 text-primary bg-card border-primary/50 rounded focus:ring-primary"
-              />
-              <span>{option.nome}</span>
-            </label>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
-// --- PÁGINA PRINCIPAL ---
-export default function DashboardPage() {
-  // ID da empresa mãe recebido no iframe (?empresa_id=...)
-  const [empresaId, setEmpresaId] = useState<string | null>(null);
-
-  // Lê o parâmetro da URL
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const params = new URLSearchParams(window.location.search);
-      const id = params.get("empresa_id");
-      if (id) {
-        setEmpresaId(id);
-        console.log("ID da Empresa Mãe recebido do Bubble:", id);
-      } else {
-        console.log("Nenhum ID de empresa encontrado na URL. Mostrando dados de exemplo.");
-      }
+    // índice: LM id → meta
+    const lmIndex = new Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>();
+    for (const lm of lmRes.response.results) {
+      const ano = parseAno((lm as any).Ano);
+      const mes = parseMes((lm as any).Mês);
+      const agfId = typeof lm.AGF === 'string' ? lm.AGF : (lm.AGF as any)?._id;
+      const agfNome = agfIdToNome.get(agfId || '') ||
+        (typeof lm.AGF === 'object' ? ((lm.AGF as any)['Nome da AGF'] || (lm.AGF as any).nome || (lm.AGF as any).name) : '') ||
+        agfId || 'AGF';
+      if (lm._id) lmIndex.set(lm._id, { ano, mes, agfId, agfNome });
     }
-  }, []);
+    const lmIds = Array.from(lmIndex.keys());
 
-  // >>>>>>> NOVO: estados para dados reais <<<<<<<
-  const [apiData, setApiData] = useState<null | {
-    agfs: { id: string; nome: string }[];
-    categoriasDespesa: string[];
-    dados: any;
-  }>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+    // 3) SubContas (por AGF)
+    const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
+    const scRes = await bubbleGet<{
+      _id: string;
+      Ano?: any; Mês?: any;
+      AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
+      LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      Categoria?: string | { _id: string; Nome?: string; name?: string };
+      Valor: number;
+    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scCons}`);
 
-  // Busca do endpoint quando houver empresaId
-  useEffect(() => {
-    if (!empresaId) return;
-    (async () => {
-      try {
-        setLoading(true);
-        setError(null);
-        const res = await fetch(
-          `/api/dash-data?empresa_id=${encodeURIComponent(empresaId)}`,
-          { cache: "no-store" }
-        );
-        if (!res.ok) throw new Error(`API ${res.status}`);
-        const json = await res.json();
-        setApiData(json);
-        console.log("Dados reais carregados:", json);
-      } catch (e: any) {
-        console.error(e);
-        setError("Falha ao carregar dados reais.");
-      } finally {
-        setLoading(false);
+    // 4) Balancete (por LM)
+    const balCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
+    const balRes = await bubbleGet<{
+      _id: string;
+      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      Quantidade?: number; Remuneração?: number; 'Tipo de objeto'?: string;
+    }>(`/api/1.1/obj/${enc('Balancete')}?limit=2000&constraints=${balCons}`);
+
+    // ---------- AGREGAÇÃO ----------
+    const dados: Record<number, Record<number, Record<string, {
+      receita: number; objetos: number; despesas: Record<string, number>;
+    }>>> = {};
+
+    // fallback por LM e também por chave composta (ano-mes-agf)
+    const lmFallbackDespesaById = new Map<string, { ano: number; mes: number; agfNome: string; total: number }>();
+    const coveredKeys = new Set<string>(); // "ano-mes-agfNome" cobertos por subconta
+
+    // 4.1 Receita + fallback base
+    for (const lm of lmRes.response.results) {
+      const meta = lmIndex.get(lm._id);
+      if (!meta) continue;
+      const { ano, mes, agfNome } = meta;
+      if (!ano || !mes) continue;
+      if (!dados[ano]) dados[ano] = {};
+      if (!dados[ano][mes]) dados[ano][mes] = {};
+      if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesas: {} };
+      dados[ano][mes][agfNome].receita += Number((lm as any).total_receita || 0);
+
+      const totalLM = Number((lm as any).total_despesa || 0);
+      if (totalLM > 0) lmFallbackDespesaById.set(lm._id, { ano, mes, agfNome, total: totalLM });
+    }
+
+    // 4.2 Objetos (Balancete)
+    for (const b of balRes.response.results) {
+      const lmField = (b as any)['Lançamento Mensal'];
+      let ano = 0, mes = 0, agfNome = 'AGF';
+      if (typeof lmField === 'string') {
+        const meta = lmIndex.get(lmField);
+        if (!meta) continue;
+        ({ ano, mes, agfNome } = meta);
+      } else if (lmField && typeof lmField === 'object') {
+        ano = parseAno((lmField as any).Ano);
+        mes = parseMes((lmField as any).Mês);
+        const aid = typeof (lmField as any).AGF === 'string' ? (lmField as any).AGF : (lmField as any).AGF?._id;
+        agfNome = agfIdToNome.get(aid || '') || agfNome;
       }
-    })();
-  }, [empresaId]);
+      if (!ano || !mes) continue;
+      if (!dados[ano]) dados[ano] = {};
+      if (!dados[ano][mes]) dados[ano][mes] = {};
+      if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesas: {} };
+      dados[ano][mes][agfNome].objetos += Number((b as any).Quantidade || 0);
+    }
 
-  // Guardamos IDs de AGF, e números de mês/ano
-  const [agfsSelecionadas, setAgfsSelecionadas] = useState<string[]>([]);
-  const [mesesSelecionados, setMesesSelecionados] = useState<number[]>([]);
-  const [anosSelecionados, setAnosSelecionados] = useState<number[]>([]);
-  const [categoriasExcluidas, setCategoriasExcluidas] = useState<string[]>([]);
+    // 4.3 Despesas por categoria (SubConta)
+    for (const sc of scRes.response.results) {
+      let ano = parseAno((sc as any).Ano);
+      let mes = parseMes((sc as any).Mês);
 
-  // >>>>>>> NOVO: fontes (API se existir; senão mock) <<<<<<<
-  const sourceAgfs = apiData?.agfs ?? mockApiData.agfs;
-  const sourceCategorias =
-    apiData?.categoriasDespesa ?? mockApiData.categoriasDespesa;
-  const sourceDados = apiData?.dados ?? mockApiData.dados;
+      let agfNome = 'AGF';
+      if ((sc as any).AGF) {
+        const agfField = (sc as any).AGF;
+        const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
+        agfNome = agfIdToNome.get(agfId || '') ||
+          (typeof agfField === 'object' ? (agfField['Nome da AGF'] || agfField.nome || agfField.name) : '') ||
+          agfNome;
+      }
 
-  const dadosProcessados = useMemo(() => {
-    const idsAgf =
-      agfsSelecionadas.length > 0
-        ? agfsSelecionadas
-        : sourceAgfs.map((a) => a.id);
-    const anos = anosSelecionados.length > 0 ? anosSelecionados : anoList;
-    const meses = mesesSelecionados.length > 0 ? mesesSelecionados : mesList;
-
-    // Transformamos IDs -> Nomes para acessar sourceDados
-    const agfsFiltradas = sourceAgfs.filter((a) => idsAgf.includes(a.id));
-
-    const totaisPorAgf: any[] = [];
-    for (const agf of agfsFiltradas) {
-      let totalReceita = 0;
-      let totalObjetos = 0;
-      const totalDespesasPorCategoria: Record<string, number> = {};
-      sourceCategorias.forEach((cat) => (totalDespesasPorCategoria[cat] = 0));
-
-      for (const ano of anos) {
-        for (const mes of meses) {
-          const d = sourceDados[ano]?.[mes]?.[agf.nome];
-          if (d) {
-            totalReceita += d.receita as number;
-            totalObjetos += d.objetos as number;
-            for (const cat of sourceCategorias) {
-              totalDespesasPorCategoria[cat] += d.despesas[
-                cat as keyof typeof d.despesas
-              ] as number;
-            }
-          }
+      const lmField = (sc as any)['LançamentoMensal'] ?? (sc as any)['Lançamento Mensal'];
+      if ((!ano || !mes) && typeof lmField === 'string') {
+        const { mes: m, ano: a } = parseLMString(lmField);
+        if (m && a) { mes = m; ano = a; }
+      } else if ((!ano || !mes) && lmField && typeof lmField === 'object') {
+        ano = parseAno((lmField as any).Ano);
+        mes = parseMes((lmField as any).Mês);
+        if (!agfNome && (lmField as any).AGF) {
+          const aid = typeof (lmField as any).AGF === 'string' ? (lmField as any).AGF : (lmField as any).AGF?._id;
+          agfNome = agfIdToNome.get(aid || '') || agfNome;
         }
       }
 
-      const despesaTotal = Object.values(totalDespesasPorCategoria).reduce(
-        (a, b) => (a as number) + (b as number),
-        0
-      ) as number;
-      const resultado = totalReceita - despesaTotal;
-      const margemLucro = totalReceita > 0 ? (resultado / totalReceita) * 100 : 0;
+      if (!ano || !mes) continue;
 
-      const despesaSimulada = Object.entries(totalDespesasPorCategoria)
-        .filter(([key]) => !categoriasExcluidas.includes(key))
-        .reduce((acc, [, val]) => (acc as number) + (val as number), 0) as number;
+      // marca cobertura por chave composta (independe do id do LM)
+      if (agfNome) {
+        coveredKeys.add(`${ano}-${mes}-${agfNome}`);
+      }
 
-      const resultadoSimulado = totalReceita - despesaSimulada;
-      const margemSimulada =
-        totalReceita > 0 ? (resultadoSimulado / totalReceita) * 100 : 0;
-      const ganhoMargem = margemSimulada - margemLucro;
+      const rawCat = (() => {
+        const c = (sc as any).Categoria;
+        if (!c) return '';
+        if (typeof c === 'string') return c;
+        return c.Nome || c.name || '';
+      })();
+      const categoria = normalizeCategoria(rawCat);
 
-      totaisPorAgf.push({
-        nome: agf.nome,
-        receita: totalReceita,
-        despesaTotal,
-        resultado,
-        margemLucro,
-        objetos: totalObjetos,
-        despesasDetalhadas: totalDespesasPorCategoria,
-        margemLucroReal: margemLucro,
-        ganhoMargem: ganhoMargem > 0 ? ganhoMargem : 0,
-      });
+      if (!dados[ano]) dados[ano] = {};
+      if (!dados[ano][mes]) dados[ano][mes] = {};
+      if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesas: {} };
+
+      dados[ano][mes][agfNome].despesas[categoria] =
+        Number(dados[ano][mes][agfNome].despesas[categoria] || 0) + Number((sc as any).Valor || 0);
     }
 
-    const totaisGerais = {
-      receita: totaisPorAgf.reduce((a, b) => a + b.receita, 0),
-      despesa: totaisPorAgf.reduce((a, b) => a + b.despesaTotal, 0),
-      resultado: totaisPorAgf.reduce((a, b) => a + b.resultado, 0),
-      objetos: totaisPorAgf.reduce((a, b) => a + b.objetos, 0),
-    };
+    // 4.4 Fallback de despesa (LM sem SubContas) → soma em "extras"
+    for (const [lmId, info] of Array.from(lmFallbackDespesaById.entries())) {
+      const key = `${info.ano}-${info.mes}-${info.agfNome}`;
+      if (coveredKeys.has(key)) continue; // já coberto por subconta (mesmo que LM seja string no Bubble)
+      const { ano, mes, agfNome, total } = info;
+      if (!dados[ano]) dados[ano] = {};
+      if (!dados[ano][mes]) dados[ano][mes] = {};
+      if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesas: {} };
+      dados[ano][mes][agfNome].despesas['extras'] =
+        Number(dados[ano][mes][agfNome].despesas['extras'] || 0) + Number(total || 0);
+    }
 
-    // Evolução ao longo do tempo respeitando filtros
-    const evolucaoResultado = meses.map((mes) => {
-      let resultadoMes = 0;
-      for (const ano of anos) {
-        for (const agf of agfsFiltradas) {
-          const d = sourceDados[ano]?.[mes]?.[agf.nome];
-          if (d) {
-            const desp = Object.values(d.despesas).reduce(
-              (x, y) => (x as number) + (y as number),
-              0
-            ) as number;
-            resultadoMes += (d.receita as number) - desp;
-          }
+    const categoriasDespesa = [
+      'aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'
+    ];
+
+    // saneamento: garante números (evita NaN)
+    for (const anoStr of Object.keys(dados)) {
+      const ano = Number(anoStr);
+      for (const mesStr of Object.keys(dados[ano])) {
+        const mes = Number(mesStr);
+        for (const agfNome of Object.keys(dados[ano][mes])) {
+          const d = dados[ano][mes][agfNome];
+          for (const c of categoriasDespesa) d.despesas[c] = Number(d.despesas[c] || 0);
+          d.receita = Number(d.receita || 0);
+          d.objetos = Number(d.objetos || 0);
         }
       }
-      return {
-        mes: new Date(0, mes - 1).toLocaleString("pt-BR", { month: "short" }),
-        resultado: resultadoMes,
-      };
-    });
+    }
 
-    return { totaisPorAgf, totaisGerais, evolucaoResultado };
-  }, [
-    agfsSelecionadas,
-    mesesSelecionados,
-    anosSelecionados,
-    categoriasExcluidas,
-    sourceAgfs,
-    sourceCategorias,
-    sourceDados,
-  ]);
-
-  const handleMultiSelect = (setter: Function, value: any) => {
-    setter((prev: any[]) =>
-      prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]
-    );
-  };
-
-  const currencyFormatter = (value: number) =>
-    value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-  const percentFormatter = (value: number) => `${value.toFixed(1)}%`;
-  const numberFormatter = (value: number) =>
-    value.toLocaleString("pt-BR");
-  const compactNumberFormatter = (value: number) =>
-    value.toLocaleString("pt-BR", { notation: "compact" });
-
-  const CORES = {
-    receita: "#4AA8FF",
-    despesa: "#E74C3C",
-    resultado: "#48DB8A",
-    objetos: "#F2C14E",
-    margem: "#A974F8",
-    simulacaoReal: "#A974F8",
-    simulacaoGanho: "#F4D35E",
-  };
-
-  // Guard simples de UI
-  if (loading) return <div className="p-6">Carregando dados…</div>;
-  if (error) return <div className="p-6 text-red-400">{error}</div>;
-
-  return (
-    <div className="p-4 md:p-8">
-      <main className="max-w-7xl mx-auto flex flex-col gap-8">
-        <header className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <MultiSelectFilter
-            name="AGF"
-            options={sourceAgfs}
-            selected={agfsSelecionadas}
-            onSelect={(id) => handleMultiSelect(setAgfsSelecionadas, id)}
-          />
-          <MultiSelectFilter
-            name="Mês"
-            options={mesList.map((m) => ({
-              id: m,
-              nome: new Date(0, m - 1).toLocaleString("pt-BR", {
-                month: "long",
-              }),
-            }))}
-            selected={mesesSelecionados}
-            onSelect={(id) => handleMultiSelect(setMesesSelecionados, id)}
-          />
-          <MultiSelectFilter
-            name="Ano"
-            options={anoList.map((a) => ({ id: a, nome: a.toString() }))}
-            selected={anosSelecionados}
-            onSelect={(id) => handleMultiSelect(setAnosSelecionados, id)}
-          />
-        </header>
-
-        <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          <Card
-            title="Resultado"
-            value={currencyFormatter(dadosProcessados.totaisGerais.resultado)}
-            borderColor={CORES.resultado}
-            valueColor="text-success"
-          />
-          <Card
-            title="Receita Total"
-            value={currencyFormatter(dadosProcessados.totaisGerais.receita)}
-            borderColor={CORES.receita}
-            valueColor="text-info"
-          />
-          <Card
-            title="Despesa Total"
-            value={currencyFormatter(dadosProcessados.totaisGerais.despesa)}
-            borderColor={CORES.despesa}
-            valueColor="text-destructive"
-          />
-          <Card
-            title="Objetos Tratados"
-            value={numberFormatter(dadosProcessados.totaisGerais.objetos)}
-            borderColor={CORES.objetos}
-            valueColor="text-warning"
-          />
-        </section>
-
-        <section>
-          <ChartContainer title="Resultado ao longo do tempo" className="h-[300px]">
-            <AreaChart
-              data={dadosProcessados.evolucaoResultado}
-              margin={{ top: 5, right: 20, left: 20, bottom: 5 }}
-            >
-              <defs>
-                <linearGradient id="colorResultado" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#F2935C" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="#1F1F3C" stopOpacity={0.1} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="rgba(233, 242, 255, 0.1)"
-              />
-              <XAxis
-                dataKey="mes"
-                stroke="#E9F2FF"
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-              />
-              <YAxis
-                stroke="#E9F2FF"
-                tickFormatter={compactNumberFormatter}
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-              />
-              <Tooltip
-                content={<CustomTooltip formatter={currencyFormatter} />}
-                cursor={{ fill: "rgba(255, 255, 255, 0.1)" }}
-              />
-              <Area
-                type="monotone"
-                dataKey="resultado"
-                name="Resultado"
-                stroke="#F2935C"
-                strokeWidth={2}
-                fill="url(#colorResultado)"
-              />
-            </AreaChart>
-          </ChartContainer>
-        </section>
-
-        <section className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <ChartContainer title="Comparativo de Receita" className="h-[280px]">
-            <BarChart
-              data={dadosProcessados.totaisPorAgf}
-              margin={{ top: 20, right: 20, left: -20, bottom: 5 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="rgba(233, 242, 255, 0.1)"
-              />
-              <XAxis
-                dataKey="nome"
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-              />
-              <YAxis hide />
-              <Tooltip
-                content={<CustomTooltip formatter={currencyFormatter} />}
-                cursor={{ fill: "rgba(255, 255, 255, 0.1)" }}
-              />
-              <Bar dataKey="receita" fill={CORES.receita} name="Receita">
-                <LabelList
-                  dataKey="receita"
-                  position="top"
-                  formatter={compactNumberFormatter}
-                  style={{ fill: "#E9F2FF", fontSize: 12 }}
-                />
-              </Bar>
-            </BarChart>
-          </ChartContainer>
-
-          <ChartContainer title="Comparativo de Despesa" className="h-[280px]">
-            <BarChart
-              data={dadosProcessados.totaisPorAgf}
-              margin={{ top: 20, right: 20, left: -20, bottom: 5 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="rgba(233, 242, 255, 0.1)"
-              />
-              <XAxis
-                dataKey="nome"
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-              />
-              <YAxis hide />
-              <Tooltip
-                content={<CustomTooltip formatter={currencyFormatter} />}
-                cursor={{ fill: "rgba(255, 255, 255, 0.1)" }}
-              />
-              <Bar dataKey="despesaTotal" fill={CORES.despesa} name="Despesa">
-                <LabelList
-                  dataKey="despesaTotal"
-                  position="top"
-                  formatter={compactNumberFormatter}
-                  style={{ fill: "#E9F2FF", fontSize: 12 }}
-                />
-              </Bar>
-            </BarChart>
-          </ChartContainer>
-
-          <ChartContainer title="Comparativo de Resultado" className="h-[280px]">
-            <BarChart
-              data={dadosProcessados.totaisPorAgf}
-              margin={{ top: 20, right: 20, left: -20, bottom: 5 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="rgba(233, 242, 255, 0.1)"
-              />
-              <XAxis
-                dataKey="nome"
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-              />
-              <YAxis hide />
-              <Tooltip
-                content={<CustomTooltip formatter={currencyFormatter} />}
-                cursor={{ fill: "rgba(255, 255, 255, 0.1)" }}
-              />
-              <Bar dataKey="resultado" fill={CORES.resultado} name="Resultado">
-                <LabelList
-                  dataKey="resultado"
-                  position="top"
-                  formatter={compactNumberFormatter}
-                  style={{ fill: "#E9F2FF", fontSize: 12 }}
-                />
-              </Bar>
-            </BarChart>
-          </ChartContainer>
-
-          <ChartContainer title="Comparativo de Margem de Lucro (%)" className="h-[280px]">
-            <BarChart
-              data={dadosProcessados.totaisPorAgf}
-              margin={{ top: 20, right: 20, left: -20, bottom: 5 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="rgba(233, 242, 255, 0.1)"
-              />
-              <XAxis
-                dataKey="nome"
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-              />
-              <YAxis hide />
-              <Tooltip
-                content={<CustomTooltip formatter={percentFormatter} />}
-                cursor={{ fill: "rgba(255, 255, 255, 0.1)" }}
-              />
-              <Bar dataKey="margemLucro" fill={CORES.margem} name="Margem">
-                <LabelList
-                  dataKey="margemLucro"
-                  position="top"
-                  formatter={percentFormatter}
-                  style={{ fill: "#E9F2FF", fontSize: 12 }}
-                />
-              </Bar>
-            </BarChart>
-          </ChartContainer>
-        </section>
-
-        <section className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <ChartContainer title="Folha de Pagamento" className="h-[350px]">
-            <BarChart
-              data={dadosProcessados.totaisPorAgf}
-              margin={{ top: 20, right: 20, left: -10, bottom: 5 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="rgba(233, 242, 255, 0.1)"
-              />
-              <XAxis
-                dataKey="nome"
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-              />
-              <YAxis
-                tickFormatter={compactNumberFormatter}
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-              />
-              <Tooltip
-                content={<CustomTooltip formatter={currencyFormatter} />}
-                cursor={{ fill: "rgba(255, 255, 255, 0.1)" }}
-              />
-              <Bar
-                dataKey="despesasDetalhadas.folha_pagamento"
-                fill="#4472CA"
-                name="Folha de Pagamento"
-              >
-                <LabelList
-                  dataKey="despesasDetalhadas.folha_pagamento"
-                  position="top"
-                  formatter={compactNumberFormatter}
-                  style={{ fill: "#E9F2FF", fontSize: 12 }}
-                />
-              </Bar>
-            </BarChart>
-          </ChartContainer>
-
-          <ChartContainer title="Total Gasto em Veículos por AGF" className="h-[350px]">
-            <PieChart>
-              <Tooltip formatter={currencyFormatter} />
-              <Legend wrapperStyle={{ fontSize: "12px", opacity: 0.8 }} />
-              <Pie
-                data={dadosProcessados.totaisPorAgf}
-                dataKey="despesasDetalhadas.veiculos"
-                nameKey="nome"
-                cx="50%"
-                cy="50%"
-                outerRadius={100}
-                labelLine={false}
-                label={({ cx, cy, midAngle, innerRadius, outerRadius, payload }) => {
-                  const radius = innerRadius + (outerRadius - innerRadius) * 1.2;
-                  const x = cx + radius * Math.cos(-midAngle * (Math.PI / 180));
-                  const y = cy + radius * Math.sin(-midAngle * (Math.PI / 180));
-                  return (
-                    <text
-                      x={x}
-                      y={y}
-                      fill="white"
-                      textAnchor={x > cx ? "start" : "end"}
-                      dominantBaseline="central"
-                      fontSize={12}
-                    >
-                      {compactNumberFormatter(
-                        (payload as any).despesasDetalhadas.veiculos
-                      )}
-                    </text>
-                  );
-                }}
-              >
-                {dadosProcessados.totaisPorAgf.map((_, index) => (
-                  <Cell
-                    key={`cell-${index}`}
-                    fill={["#F2935C", "#BF6550", "#4472CA", "#48DB8A"][index % 4]}
-                  />
-                ))}
-              </Pie>
-            </PieChart>
-          </ChartContainer>
-        </section>
-
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-1 bg-card p-4 rounded-lg">
-            <h3 className="font-bold mb-4 text-text">Objetos Tratados</h3>
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-primary/20">
-                  <th className="p-2">AGF</th>
-                  <th className="p-2 text-right">Quantidade</th>
-                </tr>
-              </thead>
-              <tbody>
-                {dadosProcessados.totaisPorAgf.map((agf) => (
-                  <tr key={agf.nome} className="border-b border-white/10">
-                    <td className="p-2 font-semibold">{agf.nome}</td>
-                    <td className="p-2 text-right">
-                      {agf.objetos.toLocaleString("pt-BR")}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="lg:col-span-2 bg-card p-4 rounded-lg">
-            <h3 className="font-bold mb-4 text-text">Despesas por Categoria</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-primary/20">
-                    <th className="p-2">AGF</th>
-                    {sourceCategorias.map((cat) => (
-                      <th key={cat} className="p-2 text-right capitalize">
-                        {cat.replace("_", " ")}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {dadosProcessados.totaisPorAgf.map((agf) => (
-                    <tr key={agf.nome} className="border-b border-white/10">
-                      <td className="p-2 font-semibold">{agf.nome}</td>
-                      {sourceCategorias.map((cat) => (
-                        <td
-                          key={cat}
-                          className="p-2 text-right text-destructive/90"
-                        >
-                          {(
-                            agf.despesasDetalhadas[
-                              cat as keyof typeof agf.despesasDetalhadas
-                            ] || 0
-                          ).toLocaleString("pt-BR", {
-                            style: "currency",
-                            currency: "BRL",
-                            minimumFractionDigits: 0,
-                          })}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        <section className="bg-card p-4 rounded-lg">
-          <h3 className="font-bold mb-4 text-text">Simulação de Margem de Lucro</h3>
-          <div className="mb-4">
-            <p className="text-sm text-text/80 mb-2">
-              Selecione despesas para excluir do cálculo:
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {sourceCategorias.map((cat) => (
-                <button
-                  key={cat}
-                  onClick={() => handleMultiSelect(setCategoriasExcluidas, cat)}
-                  className={`px-3 py-1 text-xs rounded-full transition-colors capitalize ${
-                    categoriasExcluidas.includes(cat)
-                      ? "bg-primary text-white"
-                      : "bg-gray-600/50 text-text/80"
-                  }`}
-                >
-                  {cat.replace("_", " ")}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <ChartContainer title="" className="h-[300px]">
-            <BarChart
-              data={dadosProcessados.totaisPorAgf}
-              layout="vertical"
-              margin={{ top: 5, right: 30, left: 10, bottom: 5 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="rgba(233, 242, 255, 0.1)"
-              />
-              <XAxis
-                type="number"
-                tickFormatter={(v: number) => `${v.toFixed(1)}%`}
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-              />
-              <YAxis
-                type="category"
-                dataKey="nome"
-                stroke="#E9F2FF"
-                tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }}
-                width={80}
-              />
-              <Tooltip
-                content={
-                  <CustomTooltip
-                    formatter={(v: number) => `${v.toFixed(1)}%`}
-                  />
-                }
-                cursor={{ fill: "rgba(255, 255, 255, 0.1)" }}
-              />
-              <Legend wrapperStyle={{ fontSize: "12px", opacity: 0.8 }} />
-              <Bar
-                dataKey="margemLucroReal"
-                stackId="a"
-                fill={CORES.simulacaoReal}
-                name="Margem Real"
-              >
-                <LabelList
-                  dataKey="margemLucroReal"
-                  position="center"
-                  formatter={(v: number) => `${v.toFixed(1)}%`}
-                  style={{ fill: "#E9F2FF", fontSize: 12 }}
-                />
-              </Bar>
-              <Bar
-                dataKey="ganhoMargem"
-                stackId="a"
-                fill={CORES.simulacaoGanho}
-                name="Ganho de Margem"
-              >
-                <LabelList
-                  dataKey="ganhoMargem"
-                  position="center"
-                  formatter={(v: number) => `${v.toFixed(1)}%`}
-                  style={{ fill: "#010326", fontSize: 12, fontWeight: "bold" }}
-                />
-              </Bar>
-            </BarChart>
-          </ChartContainer>
-        </section>
-      </main>
-    </div>
-  );
+    return NextResponse.json({ agfs, categoriasDespesa, dados });
+  } catch (e: any) {
+    console.error(e);
+    return NextResponse.json({ error: e.message || 'Erro' }, { status: 500 });
+  }
 }
