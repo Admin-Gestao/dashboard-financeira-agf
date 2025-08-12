@@ -128,7 +128,6 @@ export async function GET(req: Request) {
     // 3) SubConta (filtra por AGF IN [ids]) — algumas não têm AGF, então também buscaremos por LM
     const scCons = constraints([
       { key: 'AGF', constraint_type: 'in', value: agfIds },
-      // Observação: se seu plano permitir "OR" avançado, poderíamos trazer também por LM aqui.
     ]);
     const scRes = await bubbleGet<{
       _id: string;
@@ -272,8 +271,8 @@ export async function GET(req: Request) {
     }
 
     // 4.4) Fallback de despesa (LM sem SubContas) → soma em "extras"
-    for (const [lmId, info] of lmFallbackDespesa.entries()) {
-      if (lmCobertoPorSubconta.has(lmId)) continue; // já detalhado por categoria
+    lmFallbackDespesa.forEach((info, lmId) => {
+      if (lmCobertoPorSubconta.has(lmId)) return; // já detalhado por categoria
       const { ano, mes, agfNome, total } = info;
 
       if (!dados[ano]) dados[ano] = {};
@@ -284,7 +283,7 @@ export async function GET(req: Request) {
         (dados[ano][mes][agfNome].despesas['extras'] || 0) + Number(total || 0);
 
       categoriasNormalizadasEncontradas.add('extras');
-    }
+    });
 
     // categorias definitivas na ordem desejada
     const categoriasDespesa = [
