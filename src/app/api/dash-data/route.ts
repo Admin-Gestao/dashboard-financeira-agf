@@ -68,6 +68,29 @@ function normalizeCategoria(input: any): string {
   return 'extras';
 }
 
+// Helper fora do GET: interpreta LançamentoMensal como objeto, ID ou string "04/2025"
+function parseLmFieldAny(
+  lmField: any,
+  lmIndex: Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>
+): { ano: number; mes: number; lmId?: string } {
+  if (lmField && typeof lmField === 'object') {
+    return {
+      ano: parseAno(lmField.Ano),
+      mes: parseMes(lmField.Mês),
+      lmId: (lmField as any)._id as (string | undefined),
+    };
+  }
+  if (typeof lmField === 'string') {
+    // Se for ID conhecido
+    const meta = lmIndex.get(lmField);
+    if (meta) return { ano: meta.ano, mes: meta.mes, lmId: lmField };
+    // Se vier "4/2025" ou "04/2025"
+    const m = lmField.match(/^\s*(\d{1,2})\s*\/\s*(\d{4})\s*$/);
+    if (m) return { ano: Number(m[2]), mes: Number(m[1]), lmId: undefined };
+  }
+  return { ano: 0, mes: 0, lmId: undefined };
+}
+
 async function bubbleGet<T>(path: string) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' },
@@ -220,26 +243,6 @@ export async function GET(req: Request) {
       dados[ano][mes][agfNome].objetos += Number((b as any).Quantidade || 0);
     }
 
-    // Helper para interpretar LançamentoMensal em qualquer formato
-    function parseLmFieldAny(lmField: any) {
-      if (lmField && typeof lmField === 'object') {
-        return {
-          ano: parseAno(lmField.Ano),
-          mes: parseMes(lmField.Mês),
-          lmId: lmField._id as (string | undefined),
-        };
-      }
-      if (typeof lmField === 'string') {
-        // Tenta como ID
-        const meta = lmIndex.get(lmField);
-        if (meta) return { ano: meta.ano, mes: meta.mes, lmId: lmField };
-        // Tenta "04/2025" ou "4/2025"
-        const m = lmField.match(/^\s*(\d{1,2})\s*\/\s*(\d{4})\s*$/);
-        if (m) return { ano: Number(m[2]), mes: Number(m[1]), lmId: undefined };
-      }
-      return { ano: 0, mes: 0, lmId: undefined };
-    }
-
     // 4.3) Despesas por categoria (SubConta)
     const lmCobertoPorSubconta = new Set<string>();
     const categoriasNormalizadasEncontradas = new Set<string>();
@@ -251,7 +254,7 @@ export async function GET(req: Request) {
 
       // ou do LançamentoMensal (objeto, ID ou "04/2025")
       const lmField = (sc as any)['LançamentoMensal'] || (sc as any)['Lançamento Mensal'];
-      const parsedLM = parseLmFieldAny(lmField);
+      const parsedLM = parseLmFieldAny(lmField, lmIndex);
       if (!ano || !mes) {
         ano = parsedLM.ano || ano;
         mes = parsedLM.mes || mes;
