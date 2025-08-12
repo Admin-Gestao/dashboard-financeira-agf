@@ -57,38 +57,13 @@ function normalizeCategoria(input: any): string {
   if (s.includes('telef')) return 'telefone';
   if (s.includes('veic')) return 'veiculos';
   if (s.includes('impost')) return 'impostos';
-  // folha pgto / folha pagamento / folha
+  // folha pgto / folha pagamento
   if (s.includes('folha')) return 'folha_pagamento';
   if (s.includes('pgto')) return 'folha_pagamento';
   if (s.includes('pagament')) return 'folha_pagamento';
-  if (s.includes('folha pgto')) return 'folha_pagamento';
 
-  // coringa
   if (s.includes('extra')) return 'extras';
   return 'extras';
-}
-
-// Helper fora do GET: interpreta LançamentoMensal como objeto, ID ou string "04/2025"
-function parseLmFieldAny(
-  lmField: any,
-  lmIndex: Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>
-): { ano: number; mes: number; lmId?: string } {
-  if (lmField && typeof lmField === 'object') {
-    return {
-      ano: parseAno(lmField.Ano),
-      mes: parseMes(lmField.Mês),
-      lmId: (lmField as any)._id as (string | undefined),
-    };
-  }
-  if (typeof lmField === 'string') {
-    // Se for ID conhecido
-    const meta = lmIndex.get(lmField);
-    if (meta) return { ano: meta.ano, mes: meta.mes, lmId: lmField };
-    // Se vier "4/2025" ou "04/2025"
-    const m = lmField.match(/^\s*(\d{1,2})\s*\/\s*(\d{4})\s*$/);
-    if (m) return { ano: Number(m[2]), mes: Number(m[1]), lmId: undefined };
-  }
-  return { ano: 0, mes: 0, lmId: undefined };
 }
 
 async function bubbleGet<T>(path: string) {
@@ -103,13 +78,18 @@ async function bubbleGet<T>(path: string) {
   return (await res.json()) as { response: { results: T[]; count?: number } };
 }
 
+// helper p/ ler o campo "Lançamento Mensal" de vários jeitos
+function readLmField(obj: any): any {
+  return obj?.['Lançamento Mensal'] ?? obj?.['LançamentoMensal'] ?? obj?.LançamentoMensal ?? obj?.lançamento_mensal ?? undefined;
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const empresaId = searchParams.get('empresa_id');
     if (!empresaId) return NextResponse.json({ error: 'empresa_id ausente' }, { status: 400 });
 
-    // 1) AGFs da Empresa Mãe (usa campo "Nome da AGF" para exibir)
+    // 1) AGFs da Empresa Mãe
     const agfCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
     const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
       `/api/1.1/obj/${enc('AGF')}?limit=200&constraints=${agfCons}`
@@ -148,36 +128,34 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) SubConta – buscar por AGF IN [...] e também por LançamentoMensal IN [...]
-    const scConsByAgf = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
-    const scResByAgf = await bubbleGet<{
+    // 3) SubConta — BUSCA DUPLA e UNE RESULTADOS
+    // 3.1 por AGF
+    const scByAgfCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
+    const scByAgfRes = await bubbleGet<{
       _id: string;
       Ano?: any; Mês?: any;
       AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
-      LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      'Lançamento Mensal'?: any; 'LançamentoMensal'?: any;
       Categoria?: string | { _id: string; Nome?: string; name?: string };
       Valor: number;
-    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scConsByAgf}`);
+    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scByAgfCons}`);
 
-    const scConsByLm = constraints([{ key: 'LançamentoMensal', constraint_type: 'in', value: lmIds }]);
-    const scResByLm = await bubbleGet<{
+    // 3.2 por Lançamento Mensal (nome correto com espaço)
+    const scByLmCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
+    const scByLmRes = await bubbleGet<{
       _id: string;
       Ano?: any; Mês?: any;
       AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
-      LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      'Lançamento Mensal'?: any; 'LançamentoMensal'?: any;
       Categoria?: string | { _id: string; Nome?: string; name?: string };
       Valor: number;
-    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scConsByLm}`);
+    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scByLmCons}`);
 
-    // Unir e deduplicar SubContas
-    const scAll: any[] = [];
-    const seenSc = new Set<string>();
-    for (const r of [...scResByAgf.response.results, ...scResByLm.response.results]) {
-      if (!seenSc.has((r as any)._id)) {
-        seenSc.add((r as any)._id);
-        scAll.push(r);
-      }
-    }
+    // Une e remove duplicados por _id
+    const scMap = new Map<string, any>();
+    for (const r of scByAgfRes.response.results) scMap.set((r as any)._id, r);
+    for (const r of scByLmRes.response.results) scMap.set((r as any)._id, r);
+    const scMerged = Array.from(scMap.values());
 
     // 4) Balancete (filtra por Lançamento Mensal IN [ids])
     const balCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
@@ -196,10 +174,10 @@ export async function GET(req: Request) {
       despesas: Record<string, number>;
     }>>> = {};
 
-    // guardamos um fallback de despesa total por LM (usaremos se não houver subcontas)
+    // fallback de despesa total por LM (caso não haja subcontas)
     const lmFallbackDespesa = new Map<string, { ano: number; mes: number; agfNome: string; total: number }>();
 
-    // 4.1) Receita (LançamentoMensal) + fallback de despesa
+    // 4.1) Receita (LM) + fallback total_despesa
     for (const lm of lmRes.response.results) {
       const meta = lmIndex.get(lm._id);
       if (!meta) continue;
@@ -218,7 +196,7 @@ export async function GET(req: Request) {
 
     // 4.2) Objetos (Balancete)
     for (const b of balRes.response.results) {
-      const lmField = (b as any)['Lançamento Mensal'] || (b as any)['LançamentoMensal'];
+      const lmField = (b as any)['Lançamento Mensal'] ?? (b as any)['LançamentoMensal'];
       let ano = 0, mes = 0, agfNome = 'AGF';
 
       if (typeof lmField === 'string') {
@@ -243,26 +221,41 @@ export async function GET(req: Request) {
       dados[ano][mes][agfNome].objetos += Number((b as any).Quantidade || 0);
     }
 
-    // 4.3) Despesas por categoria (SubConta)
+    // 4.3) Despesas por categoria (SubConta) — cobre casos sem AGF usando LM
     const lmCobertoPorSubconta = new Set<string>();
     const categoriasNormalizadasEncontradas = new Set<string>();
 
-    for (const sc of scAll) {
-      // ano/mes do registro
+    for (const sc of scMerged) {
       let ano = parseAno((sc as any).Ano);
       let mes = parseMes((sc as any).Mês);
 
-      // ou do LançamentoMensal (objeto, ID ou "04/2025")
-      const lmField = (sc as any)['LançamentoMensal'] || (sc as any)['Lançamento Mensal'];
-      const parsedLM = parseLmFieldAny(lmField, lmIndex);
-      if (!ano || !mes) {
-        ano = parsedLM.ano || ano;
-        mes = parsedLM.mes || mes;
-      }
-      const lmId = parsedLM.lmId;
-
-      // Resolve AGF
+      const lmField = readLmField(sc);
       let agfNome = 'AGF';
+      let lmId: string | undefined;
+
+      // preferir dados do LM (se string, usa índice)
+      if ((!ano || !mes) || !(sc as any).AGF) {
+        if (typeof lmField === 'string') {
+          lmId = lmField;
+          const meta = lmIndex.get(lmField);
+          if (meta) {
+            ano = meta.ano || ano;
+            mes = meta.mes || mes;
+            agfNome = meta.agfNome || agfNome;
+          }
+        } else if (typeof lmField === 'object' && lmField) {
+          lmId = (lmField as any)._id;
+          ano = parseAno((lmField as any).Ano) || ano;
+          mes = parseMes((lmField as any).Mês) || mes;
+          const aid =
+            typeof (lmField as any).AGF === 'string'
+              ? (lmField as any).AGF
+              : (lmField as any).AGF?._id;
+          agfNome = agfIdToNome.get(aid || '') || agfNome;
+        }
+      }
+
+      // AGF direto no registro (se houver) tem prioridade
       if ((sc as any).AGF) {
         const agfField = (sc as any).AGF;
         const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
@@ -272,15 +265,11 @@ export async function GET(req: Request) {
             ? (agfField['Nome da AGF'] || agfField.nome || agfField.name)
             : '') ||
           agfNome;
-      } else if (lmId) {
-        const meta = lmIndex.get(lmId);
-        if (meta?.agfNome) agfNome = meta.agfNome;
       }
 
       if (!ano || !mes) continue;
 
-      // Categoria normalizada
-      const rawCat = (() => {
+      const rawCat = ((): any => {
         const c = (sc as any).Categoria;
         if (!c) return '';
         if (typeof c === 'string') return c;
@@ -295,7 +284,7 @@ export async function GET(req: Request) {
 
       const val = Number((sc as any).Valor || 0);
       dados[ano][mes][agfNome].despesas[categoria] =
-        Number(dados[ano][mes][agfNome].despesas[categoria] || 0) + val;
+        (dados[ano][mes][agfNome].despesas[categoria] || 0) + val;
 
       if (lmId) lmCobertoPorSubconta.add(lmId);
     }
@@ -310,7 +299,7 @@ export async function GET(req: Request) {
       if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesas: {} };
 
       dados[ano][mes][agfNome].despesas['extras'] =
-        Number(dados[ano][mes][agfNome].despesas['extras'] || 0) + Number(total || 0);
+        (dados[ano][mes][agfNome].despesas['extras'] || 0) + Number(total || 0);
 
       categoriasNormalizadasEncontradas.add('extras');
     });
@@ -320,7 +309,7 @@ export async function GET(req: Request) {
       'aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'
     ];
 
-    // garante que todas existem (evita NaN no front)
+    // garante que todas existem no objeto (evita NaN ao somar)
     for (const anoStr of Object.keys(dados)) {
       const ano = Number(anoStr);
       for (const mesStr of Object.keys(dados[ano])) {
