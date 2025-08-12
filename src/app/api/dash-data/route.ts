@@ -1,4 +1,3 @@
-// src/app/api/dash-data/route.ts
 import { NextResponse } from 'next/server';
 
 const BASE = process.env.BUBBLE_BASE_URL!;
@@ -6,6 +5,45 @@ const KEY = process.env.BUBBLE_API_KEY!;
 
 function enc(s: string) { return encodeURIComponent(s); }
 function constraints(obj: any) { return encodeURIComponent(JSON.stringify(obj)); }
+
+// mapeia "jan", "janeiro" → 1, etc.
+const MESES: Record<string, number> = {
+  '1':1,'01':1,'jan':1,'janeiro':1,
+  '2':2,'02':2,'fev':2,'fevereiro':2,
+  '3':3,'03':3,'mar':3,'março':3,'marco':3,
+  '4':4,'04':4,'abr':4,'abril':4,
+  '5':5,'05':5,'mai':5,'maio':5,
+  '6':6,'06':6,'jun':6,'junho':6,
+  '7':7,'07':7,'jul':7,'julho':7,
+  '8':8,'08':8,'ago':8,'agosto':8,
+  '9':9,'09':9,'set':9,'setembro':9,
+  '10':10,'out':10,'outubro':10,
+  '11':11,'nov':11,'novembro':11,
+  '12':12,'dez':12,'dezembro':12,
+};
+
+function parseAno(v: any): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const n = Number(v.replace(/[^\d]/g, ''));
+    return Number.isFinite(n) ? n : 0;
+  }
+  // Option set como objeto? tenta name/display
+  const s = (v?.display || v?.name || '').toString();
+  const n = Number(s.replace(/[^\d]/g, ''));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function parseMes(v: any): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const key = v.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); // tira acentos
+    return MESES[key] ?? Number(v);
+  }
+  const s = (v?.display || v?.name || '').toString().toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  return MESES[s] ?? 0;
+}
 
 async function bubbleGet<T>(path: string) {
   const res = await fetch(`${BASE}${path}`, {
@@ -25,25 +63,25 @@ export async function GET(req: Request) {
     const empresaId = searchParams.get('empresa_id');
     if (!empresaId) return NextResponse.json({ error: 'empresa_id ausente' }, { status: 400 });
 
-    // 1) AGFs da Empresa Mãe
+    // 1) AGFs da Empresa Mãe (usa campo "Nome da AGF" para exibir)
     const agfCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
-    const agfsRes = await bubbleGet<{ _id: string; nome?: string; name?: string }>(
+    const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
       `/api/1.1/obj/${enc('AGF')}?limit=200&constraints=${agfCons}`
     );
     const agfs = agfsRes.response.results.map(a => ({
       id: a._id,
-      nome: (a as any).nome || (a as any).name || a._id,
+      nome: (a as any)['Nome da AGF'] || (a as any).nome || (a as any).name || a._id,
     }));
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) LançamentoMensal filtrando por Empresa Mãe
+    // 2) LançamentoMensal (filtra por Empresa Mãe)
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
     const lmRes = await bubbleGet<{
       _id: string;
-      Ano: number;
-      Mês: number;
-      AGF: string | { _id: string; nome?: string; name?: string };
+      Ano: any;
+      Mês: any;
+      AGF: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
       total_receita?: number;
       total_despesa?: number;
       resultado_final?: number;
@@ -51,23 +89,22 @@ export async function GET(req: Request) {
     }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
     const lmIds = lmRes.response.results.map(r => r._id);
 
-    // 3) Despesa (SubConta) — filtra por AGF IN [ids]
+    // 3) SubConta (filtra por AGF IN [ids])
     const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
     const scRes = await bubbleGet<{
       _id: string;
-      Ano?: number;
-      Mês?: number;
-      AGF?: string | { _id: string; nome?: string; name?: string };
-      LançamentoMensal?: string | { _id: string; Ano?: number; Mês?: number; AGF?: any };
+      Ano?: any; Mês?: any;
+      AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
+      LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
       Categoria?: string | { _id: string; Nome?: string; name?: string };
       Valor: number;
     }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scCons}`);
 
-    // 4) Balancete — filtra por Lançamento Mensal IN [ids]
+    // 4) Balancete (filtra por Lançamento Mensal IN [ids])
     const balCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
     const balRes = await bubbleGet<{
       _id: string;
-      'Lançamento Mensal'?: string | { _id: string; Ano?: number; Mês?: number; AGF?: any };
+      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
       Quantidade?: number;
       Remuneração?: number;
       'Tipo de objeto'?: string;
@@ -80,14 +117,16 @@ export async function GET(req: Request) {
       despesas: Record<string, number>;
     }>>> = {};
 
-    // 4.1) Receita por ano/mês/agf (LançamentoMensal)
+    // 4.1) Receita (LançamentoMensal)
     for (const lm of lmRes.response.results) {
-      const ano = Number((lm as any).Ano);
-      const mes = Number((lm as any).Mês);
+      const ano = parseAno((lm as any).Ano);
+      const mes = parseMes((lm as any).Mês);
+      if (!ano || !mes) continue;
+
       const agfId = typeof lm.AGF === 'string' ? lm.AGF : (lm.AGF as any)?._id;
       const agfNome =
         agfIdToNome.get(agfId || '') ||
-        (typeof lm.AGF === 'object' ? ((lm.AGF as any).nome || (lm.AGF as any).name) : '') ||
+        (typeof lm.AGF === 'object' ? ((lm.AGF as any)['Nome da AGF'] || (lm.AGF as any).nome || (lm.AGF as any).name) : '') ||
         agfId || 'AGF';
 
       if (!dados[ano]) dados[ano] = {};
@@ -97,17 +136,19 @@ export async function GET(req: Request) {
       dados[ano][mes][agfNome].receita += Number((lm as any).total_receita || 0);
     }
 
-    // 4.2) Objetos (Quantidade) do Balancete
+    // 4.2) Objetos (Balancete)
     for (const b of balRes.response.results) {
       const lm = (b as any)['Lançamento Mensal'];
-      const ano = Number((typeof lm === 'object' ? lm?.Ano : undefined) ?? 0);
-      const mes = Number((typeof lm === 'object' ? lm?.Mês : undefined) ?? 0);
+      const ano = parseAno(typeof lm === 'object' ? lm?.Ano : undefined);
+      const mes = parseMes(typeof lm === 'object' ? lm?.Mês : undefined);
       if (!ano || !mes) continue;
 
       let agfNome = 'AGF';
       if (typeof lm === 'object' && lm?.AGF) {
         const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
-        agfNome = agfIdToNome.get(agfId || '') || (typeof lm.AGF === 'object' ? (lm.AGF.nome || lm.AGF.name) : '') || agfNome;
+        agfNome = agfIdToNome.get(agfId || '') ||
+                  (typeof lm.AGF === 'object' ? (lm.AGF['Nome da AGF'] || lm.AGF.nome || lm.AGF.name) : '') ||
+                  agfNome;
       }
 
       if (!dados[ano]) dados[ano] = {};
@@ -120,12 +161,13 @@ export async function GET(req: Request) {
     // 4.3) Despesas por categoria (SubConta)
     const categoriasSet = new Set<string>();
     for (const sc of scRes.response.results) {
-      let ano = Number((sc as any).Ano);
-      let mes = Number((sc as any).Mês);
+      let ano = parseAno((sc as any).Ano);
+      let mes = parseMes((sc as any).Mês);
+
       const lm = (sc as any)['LançamentoMensal'];
       if ((!ano || !mes) && typeof lm === 'object') {
-        ano = Number(lm?.Ano || 0);
-        mes = Number(lm?.Mês || 0);
+        ano = parseAno(lm?.Ano);
+        mes = parseMes(lm?.Mês);
       }
       if (!ano || !mes) continue;
 
@@ -133,10 +175,14 @@ export async function GET(req: Request) {
       if ((sc as any).AGF) {
         const agfField = (sc as any).AGF;
         const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
-        agfNome = agfIdToNome.get(agfId || '') || (typeof agfField === 'object' ? (agfField.nome || agfField.name) : '') || agfNome;
+        agfNome = agfIdToNome.get(agfId || '') ||
+                  (typeof agfField === 'object' ? (agfField['Nome da AGF'] || agfField.nome || agfField.name) : '') ||
+                  agfNome;
       } else if (typeof lm === 'object' && lm?.AGF) {
         const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
-        agfNome = agfIdToNome.get(agfId || '') || (typeof lm.AGF === 'object' ? (lm.AGF.nome || lm.AGF.name) : '') || agfNome;
+        agfNome = agfIdToNome.get(agfId || '') ||
+                  (typeof lm.AGF === 'object' ? (lm.AGF['Nome da AGF'] || lm.AGF.nome || lm.AGF.name) : '') ||
+                  agfNome;
       }
 
       let categoria = 'sem_categoria';
@@ -156,8 +202,7 @@ export async function GET(req: Request) {
     }
 
     if (categoriasSet.size === 0) {
-      ['aluguel','comissoes','extras','folha_pagamento','impostos','veiculos','telefone']
-        .forEach(c => categoriasSet.add(c));
+      ['aluguel','comissoes','extras','folha_pagamento','impostos','veiculos','telefone'].forEach(c => categoriasSet.add(c));
     }
 
     return NextResponse.json({
