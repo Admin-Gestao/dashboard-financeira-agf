@@ -125,18 +125,36 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) SubConta (filtra por AGF IN [ids]) — algumas não têm AGF, então também buscaremos por LM
-    const scCons = constraints([
-      { key: 'AGF', constraint_type: 'in', value: agfIds },
-    ]);
-    const scRes = await bubbleGet<{
+    // 3) SubConta – buscar por AGF IN [...] e também por LançamentoMensal IN [...]
+    const scConsByAgf = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
+    const scResByAgf = await bubbleGet<{
       _id: string;
       Ano?: any; Mês?: any;
       AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
       LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
       Categoria?: string | { _id: string; Nome?: string; name?: string };
       Valor: number;
-    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scCons}`);
+    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scConsByAgf}`);
+
+    const scConsByLm = constraints([{ key: 'LançamentoMensal', constraint_type: 'in', value: lmIds }]);
+    const scResByLm = await bubbleGet<{
+      _id: string;
+      Ano?: any; Mês?: any;
+      AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
+      LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      Categoria?: string | { _id: string; Nome?: string; name?: string };
+      Valor: number;
+    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scConsByLm}`);
+
+    // Unir e deduplicar SubContas
+    const scAll: any[] = [];
+    const seenSc = new Set<string>();
+    for (const r of [...scResByAgf.response.results, ...scResByLm.response.results]) {
+      if (!seenSc.has((r as any)._id)) {
+        seenSc.add((r as any)._id);
+        scAll.push(r);
+      }
+    }
 
     // 4) Balancete (filtra por Lançamento Mensal IN [ids])
     const balCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
@@ -175,7 +193,7 @@ export async function GET(req: Request) {
       if (totalLM > 0) lmFallbackDespesa.set(lm._id, { ano, mes, agfNome, total: totalLM });
     }
 
-    // 4.2) Objetos (Balancete) — usa índice do LM quando vier só o ID
+    // 4.2) Objetos (Balancete)
     for (const b of balRes.response.results) {
       const lmField = (b as any)['Lançamento Mensal'] || (b as any)['LançamentoMensal'];
       let ano = 0, mes = 0, agfNome = 'AGF';
@@ -202,41 +220,46 @@ export async function GET(req: Request) {
       dados[ano][mes][agfNome].objetos += Number((b as any).Quantidade || 0);
     }
 
-    // 4.3) Despesas por categoria (SubConta) — cobre casos sem AGF usando LM
+    // Helper para interpretar LançamentoMensal em qualquer formato
+    function parseLmFieldAny(lmField: any) {
+      if (lmField && typeof lmField === 'object') {
+        return {
+          ano: parseAno(lmField.Ano),
+          mes: parseMes(lmField.Mês),
+          lmId: lmField._id as (string | undefined),
+        };
+      }
+      if (typeof lmField === 'string') {
+        // Tenta como ID
+        const meta = lmIndex.get(lmField);
+        if (meta) return { ano: meta.ano, mes: meta.mes, lmId: lmField };
+        // Tenta "04/2025" ou "4/2025"
+        const m = lmField.match(/^\s*(\d{1,2})\s*\/\s*(\d{4})\s*$/);
+        if (m) return { ano: Number(m[2]), mes: Number(m[1]), lmId: undefined };
+      }
+      return { ano: 0, mes: 0, lmId: undefined };
+    }
+
+    // 4.3) Despesas por categoria (SubConta)
     const lmCobertoPorSubconta = new Set<string>();
     const categoriasNormalizadasEncontradas = new Set<string>();
 
-    for (const sc of scRes.response.results) {
+    for (const sc of scAll) {
+      // ano/mes do registro
       let ano = parseAno((sc as any).Ano);
       let mes = parseMes((sc as any).Mês);
 
+      // ou do LançamentoMensal (objeto, ID ou "04/2025")
       const lmField = (sc as any)['LançamentoMensal'] || (sc as any)['Lançamento Mensal'];
-      let agfNome = 'AGF';
-      let lmId: string | undefined;
-
-      // preferir dados do LM (se string, usa índice)
-      if ((!ano || !mes) || !(sc as any).AGF) {
-        if (typeof lmField === 'string') {
-          lmId = lmField;
-          const meta = lmIndex.get(lmField);
-          if (meta) {
-            ano = meta.ano || ano;
-            mes = meta.mes || mes;
-            agfNome = meta.agfNome || agfNome;
-          }
-        } else if (typeof lmField === 'object' && lmField) {
-          lmId = (lmField as any)._id;
-          ano = parseAno((lmField as any).Ano) || ano;
-          mes = parseMes((lmField as any).Mês) || mes;
-          const aid =
-            typeof (lmField as any).AGF === 'string'
-              ? (lmField as any).AGF
-              : (lmField as any).AGF?._id;
-          agfNome = agfIdToNome.get(aid || '') || agfNome;
-        }
+      const parsedLM = parseLmFieldAny(lmField);
+      if (!ano || !mes) {
+        ano = parsedLM.ano || ano;
+        mes = parsedLM.mes || mes;
       }
+      const lmId = parsedLM.lmId;
 
-      // AGF direto no registro (se houver) tem prioridade
+      // Resolve AGF
+      let agfNome = 'AGF';
       if ((sc as any).AGF) {
         const agfField = (sc as any).AGF;
         const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
@@ -246,11 +269,15 @@ export async function GET(req: Request) {
             ? (agfField['Nome da AGF'] || agfField.nome || agfField.name)
             : '') ||
           agfNome;
+      } else if (lmId) {
+        const meta = lmIndex.get(lmId);
+        if (meta?.agfNome) agfNome = meta.agfNome;
       }
 
       if (!ano || !mes) continue;
 
-      const rawCat = ((): any => {
+      // Categoria normalizada
+      const rawCat = (() => {
         const c = (sc as any).Categoria;
         if (!c) return '';
         if (typeof c === 'string') return c;
@@ -265,7 +292,7 @@ export async function GET(req: Request) {
 
       const val = Number((sc as any).Valor || 0);
       dados[ano][mes][agfNome].despesas[categoria] =
-        (dados[ano][mes][agfNome].despesas[categoria] || 0) + val;
+        Number(dados[ano][mes][agfNome].despesas[categoria] || 0) + val;
 
       if (lmId) lmCobertoPorSubconta.add(lmId);
     }
@@ -280,7 +307,7 @@ export async function GET(req: Request) {
       if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesas: {} };
 
       dados[ano][mes][agfNome].despesas['extras'] =
-        (dados[ano][mes][agfNome].despesas['extras'] || 0) + Number(total || 0);
+        Number(dados[ano][mes][agfNome].despesas['extras'] || 0) + Number(total || 0);
 
       categoriasNormalizadasEncontradas.add('extras');
     });
@@ -290,7 +317,7 @@ export async function GET(req: Request) {
       'aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'
     ];
 
-    // garante que todas existem no objeto (evita NaN ao somar)
+    // garante que todas existem (evita NaN no front)
     for (const anoStr of Object.keys(dados)) {
       const ano = Number(anoStr);
       for (const mesStr of Object.keys(dados[ano])) {
