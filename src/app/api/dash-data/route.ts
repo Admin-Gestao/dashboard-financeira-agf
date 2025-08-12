@@ -5,6 +5,7 @@ const BASE = process.env.BUBBLE_BASE_URL!;
 const KEY = process.env.BUBBLE_API_KEY!;
 
 function enc(s: string) { return encodeURIComponent(s); }
+function constraints(obj: any) { return encodeURIComponent(JSON.stringify(obj)); }
 
 async function bubbleGet<T>(path: string) {
   const res = await fetch(`${BASE}${path}`, {
@@ -18,17 +19,11 @@ async function bubbleGet<T>(path: string) {
   return (await res.json()) as { response: { results: T[]; count?: number } };
 }
 
-function constraints(obj: any) {
-  return encodeURIComponent(JSON.stringify(obj));
-}
-
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const empresaId = searchParams.get('empresa_id');
-    if (!empresaId) {
-      return NextResponse.json({ error: 'empresa_id ausente' }, { status: 400 });
-    }
+    if (!empresaId) return NextResponse.json({ error: 'empresa_id ausente' }, { status: 400 });
 
     // 1) AGFs da Empresa Mãe
     const agfCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
@@ -40,6 +35,7 @@ export async function GET(req: Request) {
       nome: (a as any).nome || (a as any).name || a._id,
     }));
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
+    const agfIds = agfs.map(a => a.id);
 
     // 2) LançamentoMensal filtrando por Empresa Mãe
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
@@ -53,9 +49,10 @@ export async function GET(req: Request) {
       resultado_final?: number;
       resultado_extra?: number;
     }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
+    const lmIds = lmRes.response.results.map(r => r._id);
 
-    // 3) Despesa (SubConta) — detalhamento por categoria
-    const scCons = constraints([{ key: 'LançamentoMensal.Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
+    // 3) Despesa (SubConta) — filtra por AGF IN [ids]
+    const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
     const scRes = await bubbleGet<{
       _id: string;
       Ano?: number;
@@ -66,8 +63,8 @@ export async function GET(req: Request) {
       Valor: number;
     }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scCons}`);
 
-    // 4) Balancete — objetos tratados (Quantidade)
-    const balCons = constraints([{ key: 'Lançamento Mensal.Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
+    // 4) Balancete — filtra por Lançamento Mensal IN [ids]
+    const balCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
     const balRes = await bubbleGet<{
       _id: string;
       'Lançamento Mensal'?: string | { _id: string; Ano?: number; Mês?: number; AGF?: any };
@@ -83,7 +80,7 @@ export async function GET(req: Request) {
       despesas: Record<string, number>;
     }>>> = {};
 
-    // 4.1) Receita por ano/mês/agf
+    // 4.1) Receita por ano/mês/agf (LançamentoMensal)
     for (const lm of lmRes.response.results) {
       const ano = Number((lm as any).Ano);
       const mes = Number((lm as any).Mês);
@@ -159,7 +156,8 @@ export async function GET(req: Request) {
     }
 
     if (categoriasSet.size === 0) {
-      ['aluguel','comissoes','extras','folha_pagamento','impostos','veiculos','telefone'].forEach(c => categoriasSet.add(c));
+      ['aluguel','comissoes','extras','folha_pagamento','impostos','veiculos','telefone']
+        .forEach(c => categoriasSet.add(c));
     }
 
     return NextResponse.json({
