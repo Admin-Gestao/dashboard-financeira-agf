@@ -311,13 +311,13 @@ export default function DashboardPage() {
 
     // Evolução ao longo do tempo respeitando filtros
     const evolucaoResultado = meses.map((mes) => {
-      let resultadoMes = 0;
+      let resultadoMes: number = 0;
       for (const ano of anos) {
         for (const agf of agfsFiltradas) {
           const d = sourceDados?.[ano]?.[mes]?.[agf.nome];
           if (d) {
-            // >>> ajuste de tipagem aqui <<<
-            const desp = Object.values(d.despesas ?? {}).reduce(
+            // TIPAGEM EXPLÍCITA NO REDUCE
+            const desp: number = Object.values(d.despesas ?? {}).reduce<number>(
               (sum: number, v: any) => sum + Number(v ?? 0),
               0
             );
