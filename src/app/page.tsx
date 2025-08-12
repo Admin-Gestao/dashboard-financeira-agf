@@ -266,7 +266,7 @@ export default function DashboardPage() {
             totalReceita += Number(d.receita ?? 0);
             totalObjetos += Number(d.objetos ?? 0);
             for (const cat of sourceCategorias) {
-              const add = Number(d.despesas?.[cat] ?? 0); // <<< soma segura
+              const add = Number(d.despesas?.[cat] ?? 0);
               totalDespesasPorCategoria[cat] += add;
             }
           }
@@ -274,7 +274,7 @@ export default function DashboardPage() {
       }
 
       const despesaTotal = Object.values(totalDespesasPorCategoria).reduce(
-        (a, b) => Number(a) + Number(b),
+        (a: number, b: any) => a + Number(b ?? 0),
         0
       );
       const resultado = totalReceita - despesaTotal;
@@ -282,7 +282,7 @@ export default function DashboardPage() {
 
       const despesaSimulada = Object.entries(totalDespesasPorCategoria)
         .filter(([key]) => !categoriasExcluidas.includes(key))
-        .reduce((acc, [, val]) => Number(acc) + Number(val), 0);
+        .reduce((acc: number, [, val]) => acc + Number(val ?? 0), 0);
 
       const resultadoSimulado = totalReceita - despesaSimulada;
       const margemSimulada =
@@ -316,8 +316,9 @@ export default function DashboardPage() {
         for (const agf of agfsFiltradas) {
           const d = sourceDados?.[ano]?.[mes]?.[agf.nome];
           if (d) {
+            // >>> ajuste de tipagem aqui <<<
             const desp = Object.values(d.despesas ?? {}).reduce(
-              (sum, v) => sum + Number(v ?? 0),
+              (sum: number, v: any) => sum + Number(v ?? 0),
               0
             );
             resultadoMes += Number(d.receita ?? 0) - desp;
