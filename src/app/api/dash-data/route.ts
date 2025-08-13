@@ -43,7 +43,6 @@ function parseMes(v: any): number {
   return MESES[s] ?? 0;
 }
 
-// "1.234,56" / "R$ 1.234,56" -> 1234.56
 function parseValorBR(v: any): number {
   if (typeof v === 'number') return v;
   if (typeof v !== 'string') return 0;
@@ -56,7 +55,6 @@ function parseValorBR(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-// "04/2025" -> { mes:4, ano:2025 }
 function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   if (typeof s !== 'string') return null;
   const m = s.match(/^\s*([01]?\d)\s*\/\s*(\d{4})\s*$/);
@@ -67,7 +65,6 @@ function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   return null;
 }
 
-// Lê a primeira chave existente dentre várias alternativas
 function pick<T=any>(obj: any, keys: string[]): T | undefined {
   if (!obj) return undefined as any;
   for (const k of keys) {
@@ -76,30 +73,16 @@ function pick<T=any>(obj: any, keys: string[]): T | undefined {
   return undefined as any;
 }
 
-// Normaliza as categorias para as chaves usadas no front
 function normalizeCategoria(input: any): string {
   const raw = String(input || '').trim();
   const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
   const direct: Record<string,string> = {
-    'aluguel':'aluguel',
-    'comissoes':'comissoes',
-    'comissão':'comissoes',
-    'comissao':'comissoes',
-    'extras':'extras',
-    'honorarios':'honorarios',
-    'honorário':'honorarios',
-    'honorario':'honorarios',
-    'imposto':'impostos',
-    'impostos':'impostos',
-    'pitney':'pitney',
-    'telefone':'telefone',
-    'veiculos':'veiculos',
-    'veículo':'veiculos',
-    'veiculo':'veiculos',
-    'folha pgto':'folha_pagamento',
-    'folha pgto.':'folha_pagamento',
-    'folha pagamento':'folha_pagamento',
+    'aluguel':'aluguel', 'comissoes':'comissoes', 'comissão':'comissoes', 'comissao':'comissoes',
+    'extras':'extras', 'honorarios':'honorarios', 'honorário':'honorarios', 'honorario':'honorarios',
+    'imposto':'impostos', 'impostos':'impostos', 'pitney':'pitney', 'telefone':'telefone',
+    'veiculos':'veiculos', 'veículo':'veiculos', 'veiculo':'veiculos',
+    'folha pgto':'folha_pagamento', 'folha pgto.':'folha_pagamento', 'folha pagamento':'folha_pagamento',
   };
   if (direct[s]) return direct[s];
 
@@ -149,34 +132,18 @@ export async function GET(req: Request) {
     // 2) Lançamentos Mensais
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
     const lmRes = await bubbleGet<{
-      _id: string;
-      Ano: any;
-      Mês: any;
-      AGF: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
-      total_receita?: number;
-      total_despesa?: number;
-      resultado_final?: number;
-      resultado_extra?: number;
-      'LançamentoMensal/Data'?: string;
+      _id: string; Ano: any; Mês: any; AGF: any;
+      total_receita?: number; total_despesa?: number;
     }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
 
-    const lmIndex = new Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>();
-    const lmIndexByKey = new Map<string, string>();
+    const lmIndex = new Map<string, { ano: number; mes: number; agfNome: string }>();
     for (const lm of lmRes.response.results) {
-      const dataStr = (lm as any)['LançamentoMensal/Data'];
-      const parsedDate = dataStr ? parseMesAnoStr(dataStr) : null;
-      const ano = parsedDate?.ano ?? parseAno((lm as any).Ano);
-      const mes = parsedDate?.mes ?? parseMes((lm as any).Mês);
-      const agfId = typeof lm.AGF === 'string' ? lm.AGF : (lm.AGF as any)?._id;
-      const agfNome =
-        agfIdToNome.get(agfId || '') ||
-        (typeof lm.AGF === 'object'
-          ? ((lm.AGF as any)['Nome da AGF'] || (lm.AGF as any).nome || (lm.AGF as any).name)
-          : '') ||
-        agfId || 'AGF';
-      if (lm._id) {
-        lmIndex.set(lm._id, { ano, mes, agfId, agfNome });
-        if (ano && mes) lmIndexByKey.set(`${ano}-${mes}-${agfNome}`, lm._id);
+      const ano = parseAno(lm.Ano);
+      const mes = parseMes(lm.Mês);
+      const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
+      const agfNome = agfIdToNome.get(agfId || '') || 'AGF';
+      if (lm._id && ano && mes) {
+        lmIndex.set(lm._id, { ano, mes, agfNome });
       }
     }
     const lmIds = Array.from(lmIndex.keys());
@@ -186,36 +153,24 @@ export async function GET(req: Request) {
       `/api/1.1/obj/${enc('Categoria Despesa')}?limit=2000`
     );
     const catIdToNome = new Map<string, string>(
-      catRes.response.results.map(c => {
-        const nome = (c as any).Categoria || (c as any).Nome || (c as any).name || '';
-        return [c._id, nome] as const;
-      })
+      catRes.response.results.map(c => [c._id, (c as any).Categoria || (c as any).Nome || (c as any).name || ''])
     );
 
-    // 4) Despesas (antes era SubConta)
+    // 4) Despesas (SubConta) - *** AQUI ESTÁ A CORREÇÃO ***
     const despesaCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
     const despesaRes = await bubbleGet<{
-      _id: string;
-      LançamentoMensal?: string;
-      Categoria?: any;
-      Valor: number | string;
-      AGF?: string | { _id: string; 'Nome da AGF'?: string; };
-    }>(`/api/1.1/obj/${enc('Despesa')}?limit=5000&constraints=${despesaCons}`);
+      _id: string; LançamentoMensal?: string; Categoria?: any; Valor: number | string;
+    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${despesaCons}`);
 
     // 5) Balancete por LM
     const balCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
-    const balRes = await bubbleGet<{
-      _id: string;
-      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
-      Quantidade?: number;
-    }>(`/api/1.1/obj/${enc('Balancete')}?limit=2000&constraints=${balCons}`);
+    const balRes = await bubbleGet<{ 'Lançamento Mensal'?: any; Quantidade?: number; }>(
+      `/api/1.1/obj/${enc('Balancete')}?limit=2000&constraints=${balCons}`
+    );
 
     // -------- AGREGAÇÃO --------
     const dados: Record<number, Record<number, Record<string, {
-      receita: number;
-      objetos: number;
-      despesa_total: number;
-      despesas: Record<string, number>;
+      receita: number; objetos: number; despesa_total: number; despesas: Record<string, number>;
     }>>> = {};
 
     const categoriasDespesa = [
@@ -223,45 +178,30 @@ export async function GET(req: Request) {
     ];
 
     const initAgfData = () => ({
-      receita: 0,
-      objetos: 0,
-      despesa_total: 0,
+      receita: 0, objetos: 0, despesa_total: 0,
       despesas: Object.fromEntries(categoriasDespesa.map(c => [c, 0]))
     });
 
-    // 5.1) Receita + despesa consolidada (LM)
+    // 5.1) Receita (LM)
     for (const lm of lmRes.response.results) {
       const meta = lmIndex.get(lm._id);
       if (!meta) continue;
       const { ano, mes, agfNome } = meta;
-      if (!ano || !mes) continue;
-
       if (!dados[ano]) dados[ano] = {};
       if (!dados[ano][mes]) dados[ano][mes] = {};
-      if (!dados[ano][mes][agfNome]) {
-        dados[ano][mes][agfNome] = initAgfData();
-      }
-
-      dados[ano][mes][agfNome].receita       += Number((lm as any).total_receita || 0);
-      dados[ano][mes][agfNome].despesa_total += Number((lm as any).total_despesa || 0);
+      if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = initAgfData();
+      dados[ano][mes][agfNome].receita += Number((lm as any).total_receita || 0);
     }
 
     // 5.2) Objetos (Balancete)
     for (const b of balRes.response.results) {
-      const lmId = typeof b['Lançamento Mensal'] === 'string' ? b['Lançamento Mensal'] : (b['Lançamento Mensal'] as any)?._id;
+      const lmId = typeof b['Lançamento Mensal'] === 'string' ? b['Lançamento Mensal'] : b['Lançamento Mensal']?._id;
       if (!lmId) continue;
       const meta = lmIndex.get(lmId);
       if (!meta) continue;
       const { ano, mes, agfNome } = meta;
-      if (!ano || !mes) continue;
-
-      if (!dados[ano]) dados[ano] = {};
-      if (!dados[ano][mes]) dados[ano][mes] = {};
-      if (!dados[ano][mes][agfNome]) {
-        dados[ano][mes][agfNome] = initAgfData();
-      }
-
-      dados[ano][mes][agfNome].objetos += Number((b as any).Quantidade || 0);
+      if (!dados[ano]?.[mes]?.[agfNome]) continue;
+      dados[ano][mes][agfNome].objetos += Number(b.Quantidade || 0);
     }
 
     // 5.3) Despesas por categoria
@@ -271,39 +211,21 @@ export async function GET(req: Request) {
       const meta = lmIndex.get(lmId);
       if (!meta) continue;
       const { ano, mes, agfNome } = meta;
-      if (!ano || !mes) continue;
-
-      const rawCat = (() => {
-        const c = pick<any>(d, ['Categoria', 'categoria']);
-        if (!c) return '';
-        if (typeof c === 'string') return catIdToNome.get(c) || c;
-        if (typeof c === 'object') return pick<string>(c, ['Categoria', 'Nome', 'name']) || '';
-        return '';
-      })();
-      const categoria = normalizeCategoria(rawCat);
-
-      if (!dados[ano]) dados[ano] = {};
-      if (!dados[ano][mes]) dados[ano][mes] = {};
-      if (!dados[ano][mes][agfNome]) {
-        dados[ano][mes][agfNome] = initAgfData();
-      }
-
+      if (!dados[ano]?.[mes]?.[agfNome]) continue;
+      
+      const rawCat = pick<any>(d, ['Categoria', 'categoria']);
+      const catNome = typeof rawCat === 'string' ? (catIdToNome.get(rawCat) || rawCat) : (pick<string>(rawCat, ['Categoria', 'Nome', 'name']) || '');
+      const categoria = normalizeCategoria(catNome);
+      
       const val = parseValorBR(d.Valor);
-      dados[ano][mes][agfNome].despesas[categoria] =
-        (dados[ano][mes][agfNome].despesas[categoria] || 0) + val;
+      dados[ano][mes][agfNome].despesas[categoria] += val;
     }
 
-    // Garantir chaves e números
-    for (const anoStr of Object.keys(dados)) {
-      const ano = Number(anoStr);
-      for (const mesStr of Object.keys(dados[ano])) {
-        const mes = Number(mesStr);
-        for (const agfNome of Object.keys(dados[ano][mes])) {
-          const d = dados[ano][mes][agfNome];
-          for (const c of categoriasDespesa) d.despesas[c] = Number(d.despesas[c] || 0);
-          d.receita = Number(d.receita || 0);
-          d.objetos = Number(d.objetos || 0);
-          // Recalcular despesa_total a partir das categorias somadas para garantir consistência
+    // Garantir chaves e recalcular despesa_total
+    for (const ano of Object.keys(dados)) {
+      for (const mes of Object.keys(dados[Number(ano)])) {
+        for (const agfNome of Object.keys(dados[Number(ano)][Number(mes)])) {
+          const d = dados[Number(ano)][Number(mes)][agfNome];
           d.despesa_total = Object.values(d.despesas).reduce((sum, val) => sum + val, 0);
         }
       }
