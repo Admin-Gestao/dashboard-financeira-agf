@@ -206,12 +206,12 @@ export default function DashboardPage() {
     categoriasDespesa: string[];
     dados: any;
   }>(null);
-  const [loading, setLoading] = useState(true); // Inicia como true para mostrar loading
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!empresaId) {
-        setLoading(false); // Se não houver ID, para de carregar e usa mock
+        setLoading(false);
         return;
     }
     (async () => {
@@ -224,7 +224,7 @@ export default function DashboardPage() {
         );
         if (!res.ok) throw new Error(`A API retornou o status ${res.status}`);
         const json = await res.json();
-        if (json.error) throw new Error(json.error); // Propaga erro da API
+        if (json.error) throw new Error(json.error);
         setApiData(json);
         console.log("Dados reais carregados:", json);
       } catch (e: any) {
@@ -646,4 +646,4 @@ export default function DashboardPage() {
             <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis type="number" tickFormatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
-              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} width={80}
+              <YAxis type="category" dataKey
