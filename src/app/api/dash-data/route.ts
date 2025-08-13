@@ -22,6 +22,13 @@ const MESES: Record<string, number> = {
   '12':12,'dez':12,'dezembro':12,
 };
 
+const norm = (s: any) =>
+  String(s ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
 function parseAno(v: any): number {
   if (typeof v === 'number') return v;
   if (typeof v === 'string') {
@@ -36,11 +43,10 @@ function parseAno(v: any): number {
 function parseMes(v: any): number {
   if (typeof v === 'number') return v;
   if (typeof v === 'string') {
-    const key = v.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const key = norm(v);
     return MESES[key] ?? Number(v);
   }
-  const s = (v?.display || v?.name || '').toString().toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  const s = norm(v?.display || v?.name || '');
   return MESES[s] ?? 0;
 }
 
@@ -71,10 +77,7 @@ function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
 
 // normaliza categorias vindas variadas para chaves fixas do frontend
 function normalizeCategoria(input: any): string {
-  const s = String(input || '').toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .trim();
-
+  const s = norm(input);
   if (s.includes('alug')) return 'aluguel';
   if (s.includes('comis')) return 'comissoes';
   if (s.includes('honor')) return 'honorarios';
@@ -110,11 +113,15 @@ export async function GET(req: Request) {
     const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
       `/api/1.1/obj/${enc('AGF')}?limit=200&constraints=${agfCons}`
     );
+
     const agfs = agfsRes.response.results.map(a => ({
       id: a._id,
       nome: (a as any)['Nome da AGF'] || (a as any).nome || (a as any).name || a._id,
     }));
+
+    // índices por ID e por NOME (normalizado)
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
+    const nomeToNome  = new Map<string, string>(agfs.map(a => [norm(a.nome), a.nome]));
     const agfIds = agfs.map(a => a.id);
 
     // 2) LançamentoMensal
@@ -137,13 +144,23 @@ export async function GET(req: Request) {
     for (const lm of lmRes.response.results) {
       const ano = parseAno((lm as any).Ano);
       const mes = parseMes((lm as any).Mês);
-      const agfId = typeof lm.AGF === 'string' ? lm.AGF : (lm.AGF as any)?._id;
-      const agfNome =
-        agfIdToNome.get(agfId || '') ||
-        (typeof lm.AGF === 'object' ? ((lm.AGF as any)['Nome da AGF'] || (lm.AGF as any).nome || (lm.AGF as any).name) : '') ||
-        agfId || 'AGF';
+
+      // AGF pode vir como id OU nome (string)
+      let agfNome = 'AGF';
+      if (typeof lm.AGF === 'string') {
+        agfNome = agfIdToNome.get(lm.AGF) || nomeToNome.get(norm(lm.AGF)) || agfNome;
+      } else if (lm.AGF && typeof lm.AGF === 'object') {
+        const id = (lm.AGF as any)._id;
+        agfNome =
+          agfIdToNome.get(id || '') ||
+          (lm.AGF as any)['Nome da AGF'] ||
+          (lm.AGF as any).nome ||
+          (lm.AGF as any).name ||
+          agfNome;
+      }
+
       if (lm._id) {
-        lmIndex.set(lm._id, { ano, mes, agfId, agfNome });
+        lmIndex.set(lm._id, { ano, mes, agfNome });
         if (ano && mes) {
           lmIndexByKey.set(`${ano}-${mes}-${agfNome}`, lm._id);
         }
@@ -205,16 +222,20 @@ export async function GET(req: Request) {
 
       if (typeof lmField === 'string') {
         const meta = lmIndex.get(lmField);
-        if (!meta) continue;
-        ano = meta.ano; mes = meta.mes; agfNome = meta.agfNome;
+        if (meta) {
+          ano = meta.ano; mes = meta.mes; agfNome = meta.agfNome;
+        }
       } else if (typeof lmField === 'object' && lmField) {
         ano = parseAno((lmField as any).Ano);
         mes = parseMes((lmField as any).Mês);
-        const aid =
-          typeof (lmField as any).AGF === 'string'
-            ? (lmField as any).AGF
-            : (lmField as any).AGF?._id;
-        agfNome = agfIdToNome.get(aid || '') || agfNome;
+        const aid = (lmField as any).AGF;
+        if (typeof aid === 'string') {
+          agfNome = agfIdToNome.get(aid) || nomeToNome.get(norm(aid)) || agfNome;
+        } else if (aid && typeof aid === 'object') {
+          const id = (aid as any)._id;
+          agfNome = agfIdToNome.get(id || '') ||
+            (aid as any)['Nome da AGF'] || (aid as any).nome || (aid as any).name || agfNome;
+        }
       }
       if (!ano || !mes) continue;
 
@@ -237,9 +258,8 @@ export async function GET(req: Request) {
       let agfNome = 'AGF';
       let lmId: string | undefined;
 
-      // se LM vier como objeto/id
+      // LM pode vir como id, objeto, ou string "04/2025"
       if (typeof lmField === 'string') {
-        // pode ser id OU "04/2025"
         if (lmIndex.has(lmField)) {
           lmId = lmField;
           const meta = lmIndex.get(lmField)!;
@@ -253,27 +273,34 @@ export async function GET(req: Request) {
             ano = ano || parsed.ano;
           }
         }
-      } else if (typeof lmField === 'object' && lmField) {
+      } else if (lmField && typeof lmField === 'object') {
         lmId = (lmField as any)._id;
         ano = parseAno((lmField as any).Ano) || ano;
         mes = parseMes((lmField as any).Mês) || mes;
-        const aid =
-          typeof (lmField as any).AGF === 'string'
-            ? (lmField as any).AGF
-            : (lmField as any).AGF?._id;
-        agfNome = agfIdToNome.get(aid || '') || agfNome;
+        const aid = (lmField as any).AGF;
+        if (typeof aid === 'string') {
+          agfNome = agfIdToNome.get(aid) || nomeToNome.get(norm(aid)) || agfNome;
+        } else if (aid && typeof aid === 'object') {
+          const id = (aid as any)._id;
+          agfNome = agfIdToNome.get(id || '') ||
+            (aid as any)['Nome da AGF'] || (aid as any).nome || (aid as any).name || agfNome;
+        }
       }
 
-      // AGF direto no registro tem prioridade
+      // AGF direto no registro tem prioridade (id OU nome)
       if ((sc as any).AGF) {
         const agfField = (sc as any).AGF;
-        const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
-        agfNome =
-          agfIdToNome.get(agfId || '') ||
-          (typeof agfField === 'object'
-            ? (agfField['Nome da AGF'] || agfField.nome || agfField.name)
-            : '') ||
-          agfNome;
+        if (typeof agfField === 'string') {
+          agfNome = agfIdToNome.get(agfField) || nomeToNome.get(norm(agfField)) || agfNome;
+        } else if (agfField && typeof agfField === 'object') {
+          const id = agfField._id;
+          agfNome =
+            agfIdToNome.get(id || '') ||
+            agfField['Nome da AGF'] ||
+            agfField.nome ||
+            agfField.name ||
+            agfNome;
+        }
       }
 
       if (!ano || !mes) continue;
@@ -295,9 +322,7 @@ export async function GET(req: Request) {
         (dados[ano][mes][agfNome].despesas[categoria] || 0) + val;
 
       // marca cobertura do LM
-      if (lmId) {
-        lmCobertoPorSubconta.add(lmId);
-      }
+      if (lmId) lmCobertoPorSubconta.add(lmId);
       const key = `${ano}-${mes}-${agfNome}`;
       lmCobertoPorChave.add(key);
     }
