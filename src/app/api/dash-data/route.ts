@@ -65,14 +65,6 @@ function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   return null;
 }
 
-function pick<T=any>(obj: any, keys: string[]): T | undefined {
-  if (!obj) return undefined as any;
-  for (const k of keys) {
-    if (obj[k] !== undefined) return obj[k];
-  }
-  return undefined as any;
-}
-
 function normalizeCategoria(input: any): string {
   const raw = String(input || '').trim();
   const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -126,9 +118,9 @@ export async function GET(req: Request) {
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) Lançamentos Mensais
+    // 2) Lançamentos Mensais (para Receita e Objetos)
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
-    const lmRes = await bubbleGet<{ _id: string; Ano: any; Mês: any; AGF: any; total_receita?: number; }>(
+    const lmRes = await bubbleGet<{ _id: string; Ano: any; Mês: any; AGF: any; total_receita?: number; 'Objetos Tratados'?: number }>(
       `/api/1.1/obj/LançamentoMensal?limit=1000&constraints=${lmCons}`
     );
 
@@ -144,20 +136,7 @@ export async function GET(req: Request) {
       `/api/1.1/obj/Despesa (SubConta)?limit=5000&constraints=${despesaCons}`
     );
 
-    // 5) Balancete
-    const balanceteCons = constraints([{ 'Lançamento Mensal (Balancete)': { '_constraint_': 'in', 'AGF': { '_constraint_': 'in', 'value': agfIds } } }]);
-    const balanceteRes = await bubbleGet<{ 'Lançamento Mensal (Balancete)': string; Quantidade: number; }>(
-      `/api/1.1/obj/Balancete?limit=2000&constraints=${balanceteCons}`
-    );
-    const lmIdToObjetos = new Map<string, number>();
-    for (const b of balanceteRes.response.results) {
-        const lmId = b['Lançamento Mensal (Balancete)'];
-        if (lmId) {
-            lmIdToObjetos.set(lmId, (lmIdToObjetos.get(lmId) || 0) + Number(b.Quantidade || 0));
-        }
-    }
-
-    // -------- AGREGAÇÃO --------
+    // -------- AGREGAÇÃO (LÓGICA REFEITA) --------
     const dados: Record<number, Record<number, Record<string, {
       receita: number; objetos: number; despesa_total: number; despesas: Record<string, number>;
     }>>> = {};
@@ -171,24 +150,7 @@ export async function GET(req: Request) {
       despesas: Object.fromEntries(categoriasDespesa.map(c => [c, 0]))
     });
 
-    // 5.1) Inicializa estrutura com dados dos Lançamentos Mensais (Receita e Objetos)
-    for (const lm of lmRes.response.results) {
-      const ano = parseAno(lm.Ano);
-      const mes = parseMes(lm.Mês);
-      const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
-      const agfNome = agfIdToNome.get(agfId || '');
-
-      if (!agfNome || !ano || !mes) continue;
-
-      if (!dados[ano]) dados[ano] = {};
-      if (!dados[ano][mes]) dados[ano][mes] = {};
-      if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = initAgfData();
-
-      dados[ano][mes][agfNome].receita += Number(lm.total_receita || 0);
-      dados[ano][mes][agfNome].objetos += lmIdToObjetos.get(lm._id) || 0;
-    }
-
-    // 5.2) Adiciona Despesas
+    // Passo 1: Processar todas as despesas primeiro
     for (const d of despesaRes.response.results) {
       const dateInfo = parseMesAnoStr(d.LançamentoMensal);
       const agfNome = agfIdToNome.get(d.AGF);
@@ -196,7 +158,6 @@ export async function GET(req: Request) {
       if (!dateInfo || !agfNome) continue;
       const { ano, mes } = dateInfo;
 
-      // Garante que a estrutura de dados exista antes de adicionar a despesa
       if (!dados[ano]) dados[ano] = {};
       if (!dados[ano][mes]) dados[ano][mes] = {};
       if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = initAgfData();
@@ -208,7 +169,25 @@ export async function GET(req: Request) {
       dados[ano][mes][agfNome].despesas[categoria] += valor;
     }
 
-    // 5.3) Finaliza: Soma o total das despesas para cada entrada
+    // Passo 2: Adicionar receitas e objetos aos dados existentes
+    for (const lm of lmRes.response.results) {
+      const ano = parseAno(lm.Ano);
+      const mes = parseMes(lm.Mês);
+      const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
+      const agfNome = agfIdToNome.get(agfId || '');
+
+      if (!agfNome || !ano || !mes) continue;
+
+      // Se não houver despesas para este mês/agf, cria a entrada
+      if (!dados[ano]) dados[ano] = {};
+      if (!dados[ano][mes]) dados[ano][mes] = {};
+      if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = initAgfData();
+
+      dados[ano][mes][agfNome].receita += Number(lm.total_receita || 0);
+      dados[ano][mes][agfNome].objetos += Number(lm['Objetos Tratados'] || 0);
+    }
+
+    // Passo 3: Calcular a despesa_total para todas as entradas
     for (const ano in dados) {
       for (const mes in dados[ano]) {
         for (const agfNome in dados[ano][mes]) {
