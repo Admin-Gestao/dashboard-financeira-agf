@@ -19,7 +19,7 @@ import {
 } from "recharts";
 import { ChevronDown } from "lucide-react";
 
-// --- DADOS MOCKADOS (apenas fallback) ---
+// --- DADOS MOCKADOS (mantidos como no seu original) ---
 const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
   const data: any = {};
   for (const ano of anos) {
@@ -76,7 +76,7 @@ const mockApiData = {
   ),
 };
 
-// --- COMPONENTES DE UI ---
+// --- COMPONENTES DE UI (mantidos como no seu original) ---
 const Card = ({
   title,
   value,
@@ -158,7 +158,7 @@ const MultiSelectFilter = ({
         className="bg-card border border-primary/50 text-white p-2 rounded-md focus:ring-2 focus:ring-primary w-full flex justify-between items-center"
       >
         <span>
-          {name} ({selected.length || "Todos"})
+          {name} ({selected.length === 0 ? "Todos" : selected.length})
         </span>
         <ChevronDown size={16} />
       </button>
@@ -206,11 +206,14 @@ export default function DashboardPage() {
     categoriasDespesa: string[];
     dados: any;
   }>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true); // Inicia como true para mostrar loading
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!empresaId) return;
+    if (!empresaId) {
+        setLoading(false); // Se não houver ID, para de carregar e usa mock
+        return;
+    }
     (async () => {
       try {
         setLoading(true);
@@ -219,13 +222,14 @@ export default function DashboardPage() {
           `/api/dash-data?empresa_id=${encodeURIComponent(empresaId)}`,
           { cache: "no-store" }
         );
-        if (!res.ok) throw new Error(`API ${res.status}`);
+        if (!res.ok) throw new Error(`A API retornou o status ${res.status}`);
         const json = await res.json();
+        if (json.error) throw new Error(json.error); // Propaga erro da API
         setApiData(json);
         console.log("Dados reais carregados:", json);
       } catch (e: any) {
         console.error(e);
-        setError("Falha ao carregar dados reais.");
+        setError(`Falha ao carregar dados reais: ${e.message}`);
       } finally {
         setLoading(false);
       }
@@ -237,27 +241,30 @@ export default function DashboardPage() {
   const [anosSelecionados, setAnosSelecionados] = useState<number[]>([]);
   const [categoriasExcluidas, setCategoriasExcluidas] = useState<string[]>([]);
 
-  const sourceAgfs = apiData?.agfs ?? mockApiData.agfs;
-  const sourceCategorias =
-    apiData?.categoriasDespesa ?? mockApiData.categoriasDespesa;
-  const sourceDados = apiData?.dados ?? mockApiData.dados;
+  const sourceData = apiData || mockApiData;
+  const { agfs: sourceAgfs, categoriasDespesa: sourceCategorias, dados: sourceDados } = sourceData;
 
+  const anosDisponiveis = useMemo(() => {
+    const anos = sourceDados ? Object.keys(sourceDados).map(Number) : anoList;
+    return anos.sort((a, b) => a - b);
+  }, [sourceDados]);
+
+  // *** INÍCIO DA CORREÇÃO PRINCIPAL ***
   const dadosProcessados = useMemo(() => {
     const idsAgf =
       agfsSelecionadas.length > 0
         ? agfsSelecionadas
-        : sourceAgfs.map((a) => a.id);
-    const anos = anosSelecionados.length > 0 ? anosSelecionados : anoList;
+        : sourceAgfs.map((a: any) => a.id);
+    const anos = anosSelecionados.length > 0 ? anosSelecionados : anosDisponiveis;
     const meses = mesesSelecionados.length > 0 ? mesesSelecionados : mesList;
 
-    const agfsFiltradas = sourceAgfs.filter((a) => idsAgf.includes(a.id));
+    const agfsFiltradas = sourceAgfs.filter((a: any) => idsAgf.includes(a.id));
 
-    const totaisPorAgf: any[] = [];
-    for (const agf of agfsFiltradas) {
+    const totaisPorAgf = agfsFiltradas.map((agf: any) => { // Alterado para .map
       let totalReceita = 0;
       let totalObjetos = 0;
       const totalDespesasPorCategoria: Record<string, number> = {};
-      sourceCategorias.forEach((cat) => (totalDespesasPorCategoria[cat] = 0));
+      sourceCategorias.forEach((cat: string) => (totalDespesasPorCategoria[cat] = 0));
 
       for (const ano of anos) {
         for (const mes of meses) {
@@ -266,16 +273,16 @@ export default function DashboardPage() {
             totalReceita += Number(d.receita ?? 0);
             totalObjetos += Number(d.objetos ?? 0);
             for (const cat of sourceCategorias) {
-              const add = Number(d.despesas?.[cat] ?? 0);
-              totalDespesasPorCategoria[cat] += add;
+              // Soma as despesas de cada categoria
+              totalDespesasPorCategoria[cat] += Number(d.despesas?.[cat] ?? 0);
             }
           }
         }
       }
 
+      // Agora, despesaTotal é a soma real das categorias
       const despesaTotal = Object.values(totalDespesasPorCategoria).reduce(
-        (a: number, b: any) => a + Number(b ?? 0),
-        0
+        (a: number, b: number) => a + b, 0
       );
       const resultado = totalReceita - despesaTotal;
       const margemLucro = totalReceita > 0 ? (resultado / totalReceita) * 100 : 0;
@@ -289,18 +296,18 @@ export default function DashboardPage() {
         totalReceita > 0 ? (resultadoSimulado / totalReceita) * 100 : 0;
       const ganhoMargem = margemSimulada - margemLucro;
 
-      totaisPorAgf.push({
+      return { // Retorna o objeto para o .map
         nome: agf.nome,
         receita: totalReceita,
-        despesaTotal,
+        despesaTotal, // Este valor agora está correto
         resultado,
         margemLucro,
         objetos: totalObjetos,
-        despesasDetalhadas: totalDespesasPorCategoria,
+        despesasDetalhadas: totalDespesasPorCategoria, // Este também
         margemLucroReal: margemLucro,
         ganhoMargem: ganhoMargem > 0 ? ganhoMargem : 0,
-      });
-    }
+      };
+    });
 
     const totaisGerais = {
       receita: totaisPorAgf.reduce((a, b) => a + Number(b.receita || 0), 0),
@@ -309,14 +316,14 @@ export default function DashboardPage() {
       objetos: totaisPorAgf.reduce((a, b) => a + Number(b.objetos || 0), 0),
     };
 
-    // Evolução ao longo do tempo respeitando filtros
-    const evolucaoResultado = meses.map((mes) => {
+    const evolucaoResultado = mesList.map((mes) => {
       let resultadoMes: number = 0;
-      for (const ano of anos) {
+      const anosParaEvolucao = anosSelecionados.length > 0 ? anosSelecionados : [anosDisponiveis[anosDisponiveis.length - 1] || new Date().getFullYear()];
+
+      for (const ano of anosParaEvolucao) {
         for (const agf of agfsFiltradas) {
           const d = sourceDados?.[ano]?.[mes]?.[agf.nome];
           if (d) {
-            // TIPAGEM EXPLÍCITA NO REDUCE
             const desp: number = Object.values(d.despesas ?? {}).reduce<number>(
               (sum: number, v: any) => sum + Number(v ?? 0),
               0
@@ -326,7 +333,7 @@ export default function DashboardPage() {
         }
       }
       return {
-        mes: new Date(0, mes - 1).toLocaleString("pt-BR", { month: "short" }),
+        mes: new Date(2000, mes - 1).toLocaleString("pt-BR", { month: "short" }).replace('.','').toUpperCase(),
         resultado: resultadoMes,
       };
     });
@@ -340,7 +347,9 @@ export default function DashboardPage() {
     sourceAgfs,
     sourceCategorias,
     sourceDados,
+    anosDisponiveis,
   ]);
+  // *** FIM DA CORREÇÃO PRINCIPAL ***
 
   const handleMultiSelect = (setter: Function, value: any) => {
     setter((prev: any[]) =>
@@ -366,11 +375,11 @@ export default function DashboardPage() {
     simulacaoGanho: "#F4D35E",
   };
 
-  if (loading) return <div className="p-6">Carregando dados…</div>;
-  if (error) return <div className="p-6 text-red-400">{error}</div>;
+  if (loading) return <div className="flex items-center justify-center h-screen bg-background-start text-white"><div className="p-6 text-lg">Carregando dados…</div></div>;
+  if (error) return <div className="flex items-center justify-center h-screen bg-background-start text-red-400"><div className="p-6 bg-card rounded-lg">{error}</div></div>;
 
   return (
-    <div className="p-4 md:p-8">
+    <div className="p-4 md:p-8 bg-background-start text-text min-h-screen">
       <main className="max-w-7xl mx-auto flex flex-col gap-8">
         <header className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <MultiSelectFilter
@@ -392,7 +401,7 @@ export default function DashboardPage() {
           />
           <MultiSelectFilter
             name="Ano"
-            options={anoList.map((a) => ({ id: a, nome: a.toString() }))}
+            options={anosDisponiveis.map((a) => ({ id: a, nome: a.toString() }))}
             selected={anosSelecionados}
             onSelect={(id) => handleMultiSelect(setAnosSelecionados, id)}
           />
@@ -581,7 +590,7 @@ export default function DashboardPage() {
                 <thead>
                   <tr className="border-b border-primary/20">
                     <th className="p-2">AGF</th>
-                    {sourceCategorias.map((cat) => (
+                    {sourceCategorias.map((cat: string) => (
                       <th key={cat} className="p-2 text-right capitalize">
                         {cat.replace("_", " ")}
                       </th>
@@ -592,9 +601,9 @@ export default function DashboardPage() {
                   {dadosProcessados.totaisPorAgf.map((agf) => (
                     <tr key={agf.nome} className="border-b border-white/10">
                       <td className="p-2 font-semibold">{agf.nome}</td>
-                      {sourceCategorias.map((cat) => {
+                      {sourceCategorias.map((cat: string) => {
                         const val = Number(
-                          agf.despesasDetalhadas?.[cat as keyof typeof agf.despesasDetalhadas] ?? 0
+                          (agf.despesasDetalhadas as any)?.[cat] ?? 0
                         );
                         return (
                           <td key={cat} className="p-2 text-right text-destructive/90">
@@ -621,7 +630,7 @@ export default function DashboardPage() {
               Selecione despesas para excluir do cálculo:
             </p>
             <div className="flex flex-wrap gap-2">
-              {sourceCategorias.map((cat) => (
+              {sourceCategorias.map((cat: string) => (
                 <button
                   key={cat}
                   onClick={() => handleMultiSelect(setCategoriasExcluidas, cat)}
@@ -640,20 +649,4 @@ export default function DashboardPage() {
           <ChartContainer title="" className="h-[300px]">
             <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
-              <XAxis type="number" tickFormatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
-              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} width={80} />
-              <Tooltip content={<CustomTooltip formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
-              <Legend wrapperStyle={{ fontSize: "12px", opacity: 0.8 }} />
-              <Bar dataKey="margemLucroReal" stackId="a" fill={CORES.simulacaoReal} name="Margem Real">
-                <LabelList dataKey="margemLucroReal" position="center" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} />
-              </Bar>
-              <Bar dataKey="ganhoMargem" stackId="a" fill={CORES.simulacaoGanho} name="Ganho de Margem">
-                <LabelList dataKey="ganhoMargem" position="center" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#010326", fontSize: 12, fontWeight: "bold" }} />
-              </Bar>
-            </BarChart>
-          </ChartContainer>
-        </section>
-      </main>
-    </div>
-  );
-}
+              <XAxis type="number" tickFormatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} tick={{ fill: "#E9F2FF", opacity: 
