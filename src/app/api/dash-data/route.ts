@@ -1,14 +1,11 @@
 import { NextResponse } from 'next/server';
 
 const BASE = process.env.BUBBLE_BASE_URL!;
-const KEY  = process.env.BUBBLE_API_KEY!;
+const KEY = process.env.BUBBLE_API_KEY!;
 
 function enc(s: string) { return encodeURIComponent(s); }
 function constraints(obj: any) { return encodeURIComponent(JSON.stringify(obj)); }
 
-// -----------------------
-// Utilidades de parsing
-// -----------------------
 const MESES: Record<string, number> = {
   '1':1,'01':1,'jan':1,'janeiro':1,
   '2':2,'02':2,'fev':2,'fevereiro':2,
@@ -46,7 +43,18 @@ function parseMes(v: any): number {
   return MESES[s] ?? 0;
 }
 
-// "04/2025" | "4/2025" → { mes, ano }
+function parseValorBR(v: any): number {
+  if (typeof v === 'number') return v;
+  if (typeof v !== 'string') return 0;
+  const s = v.toString()
+    .replace(/\s+/g,'')
+    .replace(/[R$\u00A0]/g,'')
+    .replace(/\./g,'')
+    .replace(',', '.');
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   if (typeof s !== 'string') return null;
   const m = s.match(/^\s*([01]?\d)\s*\/\s*(\d{4})\s*$/);
@@ -57,23 +65,9 @@ function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   return null;
 }
 
-// valor "15.432" / "15.432,99" → 15432.99
-function parseValorBR(v: any): number {
-  if (typeof v === 'number') return v;
-  if (typeof v !== 'string') return 0;
-  const s = v
-    .replace(/\s+/g,'')
-    .replace(/[R$\u00A0]/g,'')
-    .replace(/\./g,'')
-    .replace(',', '.');
-  const n = parseFloat(s);
-  return Number.isFinite(n) ? n : 0;
-}
-
-// normaliza categorias do Bubble para chaves fixas do front
+// Normaliza as categorias para as chaves usadas no front
 function normalizeCategoria(input: any): string {
-  const s = String(input || '')
-    .toLowerCase()
+  const s = String(input || '').toLowerCase()
     .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .trim();
 
@@ -89,20 +83,6 @@ function normalizeCategoria(input: any): string {
   return 'extras';
 }
 
-// lê 'display'/'text' ou variações usuais
-function getDisplay(v: any): string {
-  if (!v) return '';
-  if (typeof v === 'string') return v;
-  return (
-    v.display ??
-    v.text ??
-    v['Nome'] ??
-    v['name'] ??
-    v['Nome da AGF'] ??
-    ''
-  );
-}
-
 async function bubbleGet<T>(path: string) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' },
@@ -115,61 +95,48 @@ async function bubbleGet<T>(path: string) {
   return (await res.json()) as { response: { results: T[]; count?: number } };
 }
 
-// -----------------------
-// Handler
-// -----------------------
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
     const empresaId = searchParams.get('empresa_id');
-    if (!empresaId) {
-      return NextResponse.json({ error: 'empresa_id ausente' }, { status: 400 });
-    }
+    if (!empresaId) return NextResponse.json({ error: 'empresa_id ausente' }, { status: 400 });
 
-    // 1) AGFs da empresa
+    // AGFs
     const agfCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
-    const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string; display?: string }>(
+    const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
       `/api/1.1/obj/${enc('AGF')}?limit=200&constraints=${agfCons}`
     );
-
     const agfs = agfsRes.response.results.map(a => ({
       id: a._id,
-      nome: (a as any)['Nome da AGF'] || (a as any).nome || (a as any).name || (a as any).display || a._id,
+      nome: (a as any)['Nome da AGF'] || (a as any).nome || (a as any).name || a._id,
     }));
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) Lançamento Mensal
+    // Lançamento Mensal
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
     const lmRes = await bubbleGet<{
       _id: string;
       Ano: any;
       Mês: any;
-      AGF: any; // string | object
-      total_receita?: number | string;
-      total_despesa?: number | string;
-      resultado_final?: number | string;
-      resultado_extra?: number | string;
+      AGF: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
+      total_receita?: number;
+      total_despesa?: number;
+      resultado_final?: number;
+      resultado_extra?: number;
     }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
 
     const lmIndex = new Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>();
-    const lmIndexByKey = new Map<string, string>(); // "ano-mes-agfNome" → lmId
+    const lmIndexByKey = new Map<string, string>();
 
     for (const lm of lmRes.response.results) {
       const ano = parseAno((lm as any).Ano);
       const mes = parseMes((lm as any).Mês);
-
-      let agfId: string | undefined;
-      let agfNome = 'AGF';
-      const agfField = (lm as any).AGF;
-      if (typeof agfField === 'string') {
-        agfId = agfField;
-        agfNome = agfIdToNome.get(agfId) || agfNome;
-      } else if (agfField && typeof agfField === 'object') {
-        agfId = agfField._id;
-        agfNome = agfIdToNome.get(agfId || '') || getDisplay(agfField) || agfNome;
-      }
-
+      const agfId = typeof lm.AGF === 'string' ? lm.AGF : (lm.AGF as any)?._id;
+      const agfNome =
+        agfIdToNome.get(agfId || '') ||
+        (typeof lm.AGF === 'object' ? ((lm.AGF as any)['Nome da AGF'] || (lm.AGF as any).nome || (lm.AGF as any).name) : '') ||
+        agfId || 'AGF';
       if (lm._id) {
         lmIndex.set(lm._id, { ano, mes, agfId, agfNome });
         if (ano && mes) lmIndexByKey.set(`${ano}-${mes}-${agfNome}`, lm._id);
@@ -177,28 +144,26 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) SubContas (por AGF)
+    // SubContas (por AGF)
     const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
     const scRes = await bubbleGet<{
       _id: string;
       Ano?: any; Mês?: any;
-      AGF?: any; // string | object
-      LançamentoMensal?: any; // string "4/2025" | object | id
-      Categoria?: any; // option set (display/text) | string
+      AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
+      LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      Categoria?: any;                 // ⚠️ pode vir expandido (objeto) ou só o ID
       Valor: number | string;
     }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scCons}`);
 
-    // 4) Balancete (por LM)
+    // Balancete
     const balCons = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
     const balRes = await bubbleGet<{
       _id: string;
-      'Lançamento Mensal'?: any;
-      Quantidade?: number | string;
+      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      Quantidade?: number;
     }>(`/api/1.1/obj/${enc('Balancete')}?limit=2000&constraints=${balCons}`);
 
-    // -----------------------
     // AGREGAÇÃO
-    // -----------------------
     const dados: Record<number, Record<number, Record<string, {
       receita: number;
       objetos: number;
@@ -207,7 +172,7 @@ export async function GET(req: Request) {
 
     const lmFallbackDespesa = new Map<string, { ano: number; mes: number; agfNome: string; total: number }>();
 
-    // 4.1) Receita + fallback bruto
+    // Receita
     for (const lm of lmRes.response.results) {
       const meta = lmIndex.get(lm._id);
       if (!meta) continue;
@@ -218,27 +183,26 @@ export async function GET(req: Request) {
       if (!dados[ano][mes]) dados[ano][mes] = {};
       if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesas: {} };
 
-      dados[ano][mes][agfNome].receita += Number((lm as any).total_receita ?? 0);
+      dados[ano][mes][agfNome].receita += Number((lm as any).total_receita || 0);
 
-      const totalLM = Number((lm as any).total_despesa ?? 0);
+      const totalLM = Number((lm as any).total_despesa || 0);
       if (totalLM > 0) lmFallbackDespesa.set(lm._id, { ano, mes, agfNome, total: totalLM });
     }
 
-    // 4.2) Objetos (Balancete)
+    // Objetos
     for (const b of balRes.response.results) {
       const lmField = (b as any)['Lançamento Mensal'] || (b as any)['LançamentoMensal'];
       let ano = 0, mes = 0, agfNome = 'AGF';
 
       if (typeof lmField === 'string') {
         const meta = lmIndex.get(lmField);
-        if (meta) {
-          ano = meta.ano; mes = meta.mes; agfNome = meta.agfNome;
-        }
-      } else if (lmField && typeof lmField === 'object') {
-        ano = parseAno(lmField.Ano);
-        mes = parseMes(lmField.Mês);
-        const aid = typeof lmField.AGF === 'string' ? lmField.AGF : lmField.AGF?._id;
-        agfNome = agfIdToNome.get(aid || '') || getDisplay(lmField.AGF) || agfNome;
+        if (!meta) continue;
+        ano = meta.ano; mes = meta.mes; agfNome = meta.agfNome;
+      } else if (typeof lmField === 'object' && lmField) {
+        ano = parseAno((lmField as any).Ano);
+        mes = parseMes((lmField as any).Mês);
+        const aid = typeof (lmField as any).AGF === 'string' ? (lmField as any).AGF : (lmField as any).AGF?._id;
+        agfNome = agfIdToNome.get(aid || '') || agfNome;
       }
       if (!ano || !mes) continue;
 
@@ -246,12 +210,12 @@ export async function GET(req: Request) {
       if (!dados[ano][mes]) dados[ano][mes] = {};
       if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesas: {} };
 
-      dados[ano][mes][agfNome].objetos += Number((b as any).Quantidade ?? 0);
+      dados[ano][mes][agfNome].objetos += Number((b as any).Quantidade || 0);
     }
 
-    // 4.3) Despesas por categoria (SubConta)
+    // Despesas por categoria (SubConta)
     const lmCobertoPorSubconta = new Set<string>();
-    const lmCobertoPorChave     = new Set<string>();
+    const lmCobertoPorChave = new Set<string>();
 
     for (const sc of scRes.response.results) {
       let ano = parseAno((sc as any).Ano);
@@ -261,7 +225,6 @@ export async function GET(req: Request) {
       let agfNome = 'AGF';
       let lmId: string | undefined;
 
-      // LM pode vir como id, objeto, ou string "4/2025"
       if (typeof lmField === 'string') {
         if (lmIndex.has(lmField)) {
           lmId = lmField;
@@ -271,31 +234,37 @@ export async function GET(req: Request) {
           agfNome = meta.agfNome || agfNome;
         } else {
           const parsed = parseMesAnoStr(lmField);
-          if (parsed) { mes ||= parsed.mes; ano ||= parsed.ano; }
+          if (parsed) { mes = mes || parsed.mes; ano = ano || parsed.ano; }
         }
-      } else if (lmField && typeof lmField === 'object') {
-        lmId = lmField._id;
-        ano = parseAno(lmField.Ano) || ano;
-        mes = parseMes(lmField.Mês) || mes;
-        const aid = typeof lmField.AGF === 'string' ? lmField.AGF : lmField.AGF?._id;
-        agfNome = agfIdToNome.get(aid || '') || getDisplay(lmField.AGF) || agfNome;
+      } else if (typeof lmField === 'object' && lmField) {
+        lmId = (lmField as any)._id;
+        ano = parseAno((lmField as any).Ano) || ano;
+        mes = parseMes((lmField as any).Mês) || mes;
+        const aid = typeof (lmField as any).AGF === 'string' ? (lmField as any).AGF : (lmField as any).AGF?._id;
+        agfNome = agfIdToNome.get(aid || '') || agfNome;
       }
 
-      // AGF direto na SubConta tem prioridade
       if ((sc as any).AGF) {
         const agfField = (sc as any).AGF;
         const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
-        agfNome =
-          agfIdToNome.get(agfId || '') ||
-          getDisplay(agfField) ||
+        agfNome = agfIdToNome.get(agfId || '') ||
+          (typeof agfField === 'object' ? (agfField['Nome da AGF'] || agfField.nome || agfField.name) : '') ||
           agfNome;
       }
 
       if (!ano || !mes) continue;
 
-      // Categoria (Option Set): usar display/text
-      const catRaw = getDisplay((sc as any).Categoria);
-      const categoria = normalizeCategoria(catRaw);
+      // ⚠️ AQUI: ler o nome da categoria do objeto "Categoria Despesa"
+      const rawCat = (() => {
+        const c = (sc as any).Categoria;
+        if (!c) return '';
+        if (typeof c === 'string') return c;                 // se vier só o ID (ver passo de API!)
+        if (typeof c === 'object') {
+          return c.Categoria || c.Nome || c.name || '';
+        }
+        return '';
+      })();
+      const categoria = normalizeCategoria(rawCat);
 
       if (!dados[ano]) dados[ano] = {};
       if (!dados[ano][mes]) dados[ano][mes] = {};
@@ -306,15 +275,16 @@ export async function GET(req: Request) {
         (dados[ano][mes][agfNome].despesas[categoria] || 0) + val;
 
       if (lmId) lmCobertoPorSubconta.add(lmId);
-      lmCobertoPorChave.add(`${ano}-${mes}-${agfNome}`);
+      const key = `${ano}-${mes}-${agfNome}`;
+      lmCobertoPorChave.add(key);
     }
 
-    // 4.4) Fallback de despesa → joga em "extras" apenas se NÃO houver subcontas
+    // Fallback para LM sem subcontas
     lmFallbackDespesa.forEach((info, lmId) => {
       const { ano, mes, agfNome, total } = info;
       const key = `${ano}-${mes}-${agfNome}`;
       if (lmCobertoPorSubconta.has(lmId)) return;
-      if (lmCobertoPorChave.has(key))     return;
+      if (lmCobertoPorChave.has(key)) return;
 
       if (!dados[ano]) dados[ano] = {};
       if (!dados[ano][mes]) dados[ano][mes] = {};
@@ -324,12 +294,10 @@ export async function GET(req: Request) {
         (dados[ano][mes][agfNome].despesas['extras'] || 0) + Number(total || 0);
     });
 
-    // ordem das colunas
     const categoriasDespesa = [
       'aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'
     ];
 
-    // garantir chaves/numéricos
     for (const anoStr of Object.keys(dados)) {
       const ano = Number(anoStr);
       for (const mesStr of Object.keys(dados[ano])) {
