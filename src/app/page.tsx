@@ -209,13 +209,11 @@ export default function DashboardPage() {
         for (const agf of agfsFiltradas) {
           const d = sourceDados?.[ano]?.[mes]?.[agf.nome];
           if (d) {
-            // *** INÍCIO DA CORREÇÃO DO TYPE ERROR ***
             const despesaMes: number = Object.values(d.despesas ?? {}).reduce<number>(
               (sum: number, v: any) => sum + Number(v ?? 0),
               0
             );
             resultadoMes += (Number(d.receita ?? 0) - despesaMes);
-            // *** FIM DA CORREÇÃO DO TYPE ERROR ***
           }
         }
       }
@@ -374,4 +372,28 @@ export default function DashboardPage() {
           <h3 className="font-bold mb-4 text-text">Simulação de Margem de Lucro</h3>
           <div className="mb-4">
             <p className="text-sm text-text/80 mb-2">Selecione despesas para excluir do cálculo:</p>
-            <div className="flex flex-wrap gap-
+            <div className="flex flex-wrap gap-2">
+              {sourceCategorias.map((cat: string) => (
+                <button key={cat} onClick={() => handleMultiSelect(setCategoriasExcluidas, cat)}
+                  className={`px-3 py-1 text-xs rounded-full transition-colors capitalize ${categoriasExcluidas.includes(cat) ? "bg-primary text-white" : "bg-gray-600/50 text-text/80"}`}>
+                  {cat.replace(/_/g, " ")}
+                </button>
+              ))}
+            </div>
+          </div>
+          <ChartContainer title="" className="h-[300px]">
+            <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
+              <XAxis type="number" tickFormatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} width={80} />
+              <Tooltip content={<CustomTooltip formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
+              <Legend wrapperStyle={{ fontSize: "12px", opacity: 0.8 }} />
+              <Bar dataKey="margemLucroReal" stackId="a" fill={CORES.simulacaoReal} name="Margem Real"><LabelList dataKey="margemLucroReal" position="center" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} /></Bar>
+              <Bar dataKey="ganhoMargem" stackId="a" fill={CORES.simulacaoGanho} name="Ganho de Margem"><LabelList dataKey="ganhoMargem" position="center" formatter={(v: number) => v > 0 ? `+${Number(v ?? 0).toFixed(1)}%` : ''} style={{ fill: "#010326", fontSize: 12, fontWeight: "bold" }} /></Bar>
+            </BarChart>
+          </ChartContainer>
+        </section>
+      </main>
+    </div>
+  );
+}
