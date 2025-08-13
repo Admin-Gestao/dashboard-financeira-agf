@@ -646,4 +646,4 @@ export default function DashboardPage() {
             <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis type="number" tickFormatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
-              <YAxis type="category" dataKey
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" tick={{ fill: "#E9F2FF", opacity: 0
