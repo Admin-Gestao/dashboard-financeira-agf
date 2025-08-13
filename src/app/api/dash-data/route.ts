@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 const BASE = process.env.BUBBLE_BASE_URL!;
-const KEY = process.env.BUBBLE_API_KEY!;
+const KEY  = process.env.BUBBLE_API_KEY!;
 
 function enc(s: string) { return encodeURIComponent(s); }
 function constraints(obj: any) { return encodeURIComponent(JSON.stringify(obj)); }
@@ -67,11 +67,41 @@ function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   return null;
 }
 
+// Lê a primeira chave existente dentre várias alternativas
+function pick<T=any>(obj: any, keys: string[]): T | undefined {
+  if (!obj) return undefined as any;
+  for (const k of keys) {
+    if (obj[k] !== undefined) return obj[k];
+  }
+  return undefined as any;
+}
+
 // Normaliza as categorias para as chaves usadas no front
 function normalizeCategoria(input: any): string {
-  const s = String(input || '').toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-    .trim();
+  const raw = String(input || '').trim();
+  const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+  const direct: Record<string,string> = {
+    'aluguel':'aluguel',
+    'comissoes':'comissoes',
+    'comissão':'comissoes',
+    'comissao':'comissoes',
+    'extras':'extras',
+    'honorarios':'honorarios',
+    'honorário':'honorarios',
+    'honorario':'honorarios',
+    'imposto':'impostos',
+    'impostos':'impostos',
+    'pitney':'pitney',
+    'telefone':'telefone',
+    'veiculos':'veiculos',
+    'veículo':'veiculos',
+    'veiculo':'veiculos',
+    'folha pgto':'folha_pagamento',
+    'folha pgto.':'folha_pagamento',
+    'folha pagamento':'folha_pagamento',
+  };
+  if (direct[s]) return direct[s];
 
   if (s.includes('alug')) return 'aluguel';
   if (s.includes('comis')) return 'comissoes';
@@ -82,6 +112,7 @@ function normalizeCategoria(input: any): string {
   if (s.includes('impost')) return 'impostos';
   if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
   if (s.includes('extra')) return 'extras';
+
   return 'extras';
 }
 
@@ -115,7 +146,7 @@ export async function GET(req: Request) {
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) Lançamentos Mensais da empresa
+    // 2) Lançamentos Mensais
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
     const lmRes = await bubbleGet<{
       _id: string;
@@ -128,7 +159,6 @@ export async function GET(req: Request) {
       resultado_extra?: number;
     }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
 
-    // índices de LM
     const lmIndex = new Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>();
     const lmIndexByKey = new Map<string, string>();
     for (const lm of lmRes.response.results) {
@@ -148,9 +178,7 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) CATEGORIAS (mapa id -> nome)  <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-    // É comum SubConta.Categoria vir só com o ID (string). Buscamos a tabela
-    // "Categoria Despesa" e montamos um mapa para resolver o nome.
+    // 3) CATEGORIAS (mapa id -> nome)
     const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string }>(
       `/api/1.1/obj/${enc('Categoria Despesa')}?limit=2000`
     );
@@ -168,7 +196,7 @@ export async function GET(req: Request) {
       Ano?: any; Mês?: any;
       AGF?: string | { _id: string; 'Nome da AGF'?: string; nome?: string; name?: string };
       LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
-      Categoria?: any;    // pode vir objeto OU ID (string)
+      Categoria?: any;
       Valor: number | string;
     }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=2000&constraints=${scCons}`);
 
@@ -201,7 +229,7 @@ export async function GET(req: Request) {
         dados[ano][mes][agfNome] = { receita: 0, objetos: 0, despesa_total: 0, despesas: {} };
       }
 
-      dados[ano][mes][agfNome].receita += Number((lm as any).total_receita || 0);
+      dados[ano][mes][agfNome].receita       += Number((lm as any).total_receita || 0);
       dados[ano][mes][agfNome].despesa_total += Number((lm as any).total_despesa || 0);
     }
 
@@ -269,17 +297,12 @@ export async function GET(req: Request) {
 
       if (!ano || !mes) continue;
 
-      // Resolver nome da categoria:
+      // Resolver nome da categoria (ID -> nome; ou texto)
       const rawCat = (() => {
-        const c = (sc as any).Categoria;
+        const c = pick<any>((sc as any), ['Categoria', 'Categoria Despesa', 'categoria', 'categoria_despesa']);
         if (!c) return '';
-        if (typeof c === 'string') {
-          // veio só ID -> buscar no mapa
-          return catIdToNome.get(c) || c;
-        }
-        if (typeof c === 'object') {
-          return c.Categoria || c.Nome || c.name || '';
-        }
+        if (typeof c === 'string') return catIdToNome.get(c) || c; // ID -> nome
+        if (typeof c === 'object') return pick<string>(c, ['Categoria', 'Nome', 'name']) || '';
         return '';
       })();
       const categoria = normalizeCategoria(rawCat);
@@ -295,7 +318,6 @@ export async function GET(req: Request) {
         (dados[ano][mes][agfNome].despesas[categoria] || 0) + val;
     }
 
-    // categorias de interesse (ordem)
     const categoriasDespesa = [
       'aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'
     ];
