@@ -1,0 +1,40 @@
+{
+  "agfs": [
+    { "id": "1751032012715x423593633964884000", "nome": "Campo Limpo" },
+    { "id": "1751032101655x804560366850539500", "nome": "República" },
+    { "id": "1751494194789x272905751163116770", "nome": "São Jorge" },
+    { "id": "1752096538554x179551120588800000", "nome": "Senador Teotônio" }
+  ],
+  "categoriasDespesa": [
+    "aluguel",
+    "comissoes",
+    "extras",
+    "honorarios",
+    "impostos",
+    "pitney",
+    "telefone",
+    "veiculos",
+    "folha_pagamento"
+  ],
+  "dados": {
+    "2025": {
+      "4": {
+        "Campo Limpo": {
+          "receita": 216673,
+          "objetos": 198634,
+          "despesas": {
+            "aluguel": 15432,
+            "comissoes": 0,
+            "extras": 1321,
+            "honorarios": 0,
+            "impostos": 0,
+            "pitney": 0,
+            "telefone": 453,
+            "veiculos": 0,
+            "folha_pagamento": 1940
+          }
+        }
+      }
+    }
+  }
+}
