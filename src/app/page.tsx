@@ -143,7 +143,7 @@ export default function DashboardPage() {
   const [agfsSelecionadas, setAgfsSelecionadas] = useState<string[]>([]);
   const [mesesSelecionados, setMesesSelecionados] = useState<number[]>([]);
   const [anosSelecionados, setAnosSelecionados] = useState<number[]>([]);
-  const [categoriasExcluidas, setCategoriasExcluidas] = useState<string[]>([]);
+  const [categoriasExcluidas, setCategoriasExcluidas] = useState<string[]>([]); // categorias a REMOVER da simulação
 
   const sourceData = apiData || mockApiData;
   const { agfs: sourceAgfs, categoriasDespesa: sourceCategorias, dados: sourceDados } = sourceData;
@@ -178,21 +178,28 @@ export default function DashboardPage() {
         }
       }
 
-      // usa o total oficial se vier do backend; senão, usa a soma das categorias
       const somaCategorias = Object.values(despesasDetalhadas).reduce((a, b) => a + b, 0);
       const despesaTotal = totalDespesaOficial > 0 ? totalDespesaOficial : somaCategorias;
 
       const resultado = totalReceita - despesaTotal;
       const margemLucro = totalReceita > 0 ? (resultado / totalReceita) * 100 : 0;
 
-      // simulação: remove categorias excluídas
-      const despesaSimulada = Object.entries(despesasDetalhadas)
-        .filter(([key]) => !categoriasExcluidas.includes(key))
-        .reduce((acc, [, val]) => acc + val, 0);
-      const despesaBaseSimul = totalDespesaOficial > 0 ? Math.min(despesaSimulada, despesaTotal) : despesaSimulada;
-      const resultadoSimulado = totalReceita - despesaBaseSimul;
+      // SIMULAÇÃO — remove SOMENTE as categorias selecionadas (categoriasExcluidas)
+      let despesaSimulada = 0;
+      if (categoriasExcluidas.length === 0) {
+        // sem exclusões -> simulado = real
+        despesaSimulada = despesaTotal;
+      } else {
+        despesaSimulada = Object.entries(despesasDetalhadas)
+          .filter(([key]) => !categoriasExcluidas.includes(key)) // mantém as não excluídas
+          .reduce((acc, [, val]) => acc + val, 0);
+        // se houver valor oficial, limita ao oficial (evita “ganho” por diferenças de arredondamento)
+        if (totalDespesaOficial > 0) despesaSimulada = Math.min(despesaSimulada, despesaTotal);
+      }
+
+      const resultadoSimulado = totalReceita - despesaSimulada;
       const margemSimulada = totalReceita > 0 ? (resultadoSimulado / totalReceita) * 100 : 0;
-      const ganhoMargem = Math.max(0, margemSimulada - margemLucro);
+      const ganhoMargem = categoriasExcluidas.length === 0 ? 0 : Math.max(0, margemSimulada - margemLucro);
 
       return {
         nome: agf.nome,
@@ -368,55 +375,12 @@ export default function DashboardPage() {
           </ChartContainer>
         </section>
 
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-1 bg-card p-4 rounded-lg">
-            <h3 className="font-bold mb-4 text-text">Objetos Tratados</h3>
-            <table className="w-full text-left text-sm">
-              <thead><tr className="border-b border-primary/20"><th className="p-2">AGF</th><th className="p-2 text-right">Quantidade</th></tr></thead>
-              <tbody>
-                {dadosProcessados.totaisPorAgf.map((agf) => (
-                  <tr key={agf.nome} className="border-b border-white/10">
-                    <td className="p-2 font-semibold">{agf.nome}</td>
-                    <td className="p-2 text-right">{agf.objetos.toLocaleString("pt-BR")}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="lg:col-span-2 bg-card p-4 rounded-lg">
-            <h3 className="font-bold mb-4 text-text">Despesas por Categoria</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-primary/20">
-                    <th className="p-2">AGF</th>
-                    {sourceCategorias.map((cat: string) => (<th key={cat} className="p-2 text-right capitalize">{cat.replace(/_/g, " ")}</th>))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {dadosProcessados.totaisPorAgf.map((agf) => (
-                    <tr key={agf.nome} className="border-b border-white/10">
-                      <td className="p-2 font-semibold">{agf.nome}</td>
-                      {sourceCategorias.map((cat: string) => {
-                        const val = Number((agf.despesasDetalhadas as any)?.[cat] ?? 0);
-                        return (
-                          <td key={cat} className="p-2 text-right text-destructive/90">
-                            {val.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 0 })}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
         <section className="bg-card p-4 rounded-lg">
           <h3 className="font-bold mb-4 text-text">Simulação de Margem de Lucro</h3>
           <div className="mb-4">
-            <p className="text-sm text-text/80 mb-2">Selecione despesas para excluir do cálculo:</p>
+            <p className="text-sm text-text/80 mb-2">
+              Selecione despesas para <strong>excluir</strong> do cálculo:
+            </p>
             <div className="flex flex-wrap gap-2">
               {sourceCategorias.map((cat: string) => (
                 <button
@@ -431,19 +395,32 @@ export default function DashboardPage() {
               ))}
             </div>
           </div>
+
           <ChartContainer title="" className="h-[300px]">
             <BarChart data={dadosProcessados.totaisPorAgf} layout="vertical" margin={{ top: 5, right: 30, left: 10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
-              <XAxis type="number" tickFormatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
-              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} width={80} />
-              <Tooltip content={<CustomTooltip formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
+              <XAxis type="number" domain={[0, 100]} tickFormatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
+              <YAxis type="category" dataKey="nome" stroke="#E9F2FF" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} width={90} />
+              <Tooltip
+                content={<CustomTooltip formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} />}
+                cursor={{ fill: "rgba(255, 255, 255, 0.1)" }}
+              />
               <Legend wrapperStyle={{ fontSize: "12px", opacity: 0.8 }} />
+              {/* Margem Real (sempre visível) */}
               <Bar dataKey="margemLucroReal" stackId="a" fill="#A974F8" name="Margem Real">
                 <LabelList dataKey="margemLucroReal" position="center" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} />
               </Bar>
-              <Bar dataKey="ganhoMargem" stackId="a" fill="#F4D35E" name="Ganho de Margem">
-                <LabelList dataKey="ganhoMargem" position="center" formatter={(v: number) => v > 0 ? `+${Number(v ?? 0).toFixed(1)}%` : ''} style={{ fill: "#010326", fontSize: 12, fontWeight: "bold" }} />
-              </Bar>
+              {/* Ganho de Margem (só aparece quando houver exclusões) */}
+              {categoriasExcluidas.length > 0 && (
+                <Bar dataKey="ganhoMargem" stackId="a" fill="#F4D35E" name="Ganho de Margem">
+                  <LabelList
+                    dataKey="ganhoMargem"
+                    position="center"
+                    formatter={(v: number) => (v > 0 ? `+${Number(v ?? 0).toFixed(1)}%` : "")}
+                    style={{ fill: "#010326", fontSize: 12, fontWeight: "bold" }}
+                  />
+                </Bar>
+              )}
             </BarChart>
           </ChartContainer>
         </section>
