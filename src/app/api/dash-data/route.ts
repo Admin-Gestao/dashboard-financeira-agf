@@ -43,6 +43,7 @@ function parseMes(v: any): number {
   return MESES[s] ?? 0;
 }
 
+// "1.234,56" / "R$ 1.234,56" -> 1234.56
 function parseValorBR(v: any): number {
   if (typeof v === 'number') return v;
   if (typeof v !== 'string') return 0;
@@ -55,9 +56,10 @@ function parseValorBR(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+// "04/2025" -> { mes:4, ano:2025 }
 function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   if (typeof s !== 'string') return null;
-  const m = s.match(/^\s*(\d{1,2})\s*\/\s*(\d{4})\s*$/);
+  const m = s.match(/^\s*([01]?\d)\s*\/\s*(\d{4})\s*$/);
   if (!m) return null;
   const mes = Number(m[1]);
   const ano = Number(m[2]);
@@ -65,16 +67,20 @@ function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   return null;
 }
 
+// Normaliza as categorias para as chaves usadas no front
 function normalizeCategoria(input: any): string {
   const raw = String(input || '').trim();
   const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
   const direct: Record<string,string> = {
-    'aluguel':'aluguel', 'comissoes':'comissoes', 'comissão':'comissoes', 'comissao':'comissoes',
-    'extras':'extras', 'honorarios':'honorarios', 'honorário':'honorarios', 'honorario':'honorarios',
-    'imposto':'impostos', 'impostos':'impostos', 'pitney':'pitney', 'telefone':'telefone',
-    'veiculos':'veiculos', 'veículo':'veiculos', 'veiculo':'veiculos',
-    'folha pgto':'folha_pagamento', 'folha pgto.':'folha_pagamento', 'folha pagamento':'folha_pagamento',
+    'aluguel':'aluguel',
+    'comissoes':'comissoes','comissão':'comissoes','comissao':'comissoes',
+    'extras':'extras',
+    'honorarios':'honorarios','honorário':'honorarios','honorario':'honorarios',
+    'imposto':'impostos','impostos':'impostos',
+    'pitney':'pitney','telefone':'telefone',
+    'veiculos':'veiculos','veículo':'veiculos','veiculo':'veiculos',
+    'folha pgto':'folha_pagamento','folha pgto.':'folha_pagamento','folha pagamento':'folha_pagamento',
   };
   if (direct[s]) return direct[s];
 
@@ -87,7 +93,6 @@ function normalizeCategoria(input: any): string {
   if (s.includes('impost')) return 'impostos';
   if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
   if (s.includes('extra')) return 'extras';
-
   return 'extras';
 }
 
@@ -111,95 +116,192 @@ export async function GET(req: Request) {
 
     // 1) AGFs da empresa
     const agfCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
-    const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; }>(
-      `/api/1.1/obj/AGF?limit=200&constraints=${agfCons}`
+    const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
+      `/api/1.1/obj/${enc('AGF')}?limit=200&constraints=${agfCons}`
     );
-    const agfs = agfsRes.response.results.map(a => ({ id: a._id, nome: a['Nome da AGF'] || a._id }));
+    const agfs = agfsRes.response.results.map(a => ({
+      id: a._id,
+      nome: (a as any)['Nome da AGF'] || (a as any).nome || (a as any).name || a._id,
+    }));
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) Lançamentos Mensais (para Receita e Objetos)
+    // 2) Lançamentos Mensais da empresa (receita + despesa_total)
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
-    const lmRes = await bubbleGet<{ _id: string; Ano: any; Mês: any; AGF: any; total_receita?: number; 'Objetos Tratados'?: number }>(
-      `/api/1.1/obj/LançamentoMensal?limit=1000&constraints=${lmCons}`
+    const lmRes = await bubbleGet<{
+      _id: string;
+      Ano: any;
+      Mês: any;
+      AGF: string | { _id: string };
+      total_receita?: number;
+      total_despesa?: number;
+    }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
+
+    // mapear LM -> meta (ano, mes, agf)
+    const lmIndex = new Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>();
+    for (const lm of lmRes.response.results) {
+      const ano = parseAno((lm as any).Ano);
+      const mes = parseMes((lm as any).Mês);
+      const agfId = typeof lm.AGF === 'string' ? lm.AGF : (lm.AGF as any)?._id;
+      const agfNome = agfIdToNome.get(agfId || '') || agfId || 'AGF';
+      if (lm._id) lmIndex.set(lm._id, { ano, mes, agfId, agfNome });
+    }
+    const lmIds = Array.from(lmIndex.keys());
+
+    // 3) CATEGORIAS (mapa id -> nome, para quando SubConta.Categoria vier como ID)
+    const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string }>(
+      `/api/1.1/obj/${enc('Categoria Despesa')}?limit=2000`
+    );
+    const catIdToNome = new Map<string, string>(
+      catRes.response.results.map(c => {
+        const nome = (c as any).Categoria || (c as any).Nome || (c as any).name || '';
+        return [c._id, nome] as const;
+      })
     );
 
-    // 3) CATEGORIAS (mapa id -> nome)
-    const catRes = await bubbleGet<{ _id: string; Categoria?: string; }>(
-      `/api/1.1/obj/Categoria Despesa?limit=2000`
-    );
-    const catIdToNome = new Map<string, string>(catRes.response.results.map(c => [c._id, c.Categoria || '']));
+    // 4) SubContas por AGF (detalhe das despesas por categoria)
+    const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
+    const scRes = await bubbleGet<{
+      _id: string;
+      AGF: string | { _id: string };
+      LançamentoMensal?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      Categoria?: any;   // pode vir ID (string) ou texto/objeto
+      Valor: number | string;
+    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scCons}`);
 
-    // 4) Despesas (SubConta)
-    const despesaCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
-    const despesaRes = await bubbleGet<{ AGF: string; LançamentoMensal: string; Categoria: string; Valor: number | string; }>(
-      `/api/1.1/obj/Despesa (SubConta)?limit=5000&constraints=${despesaCons}`
-    );
+    // 5) Balancete (objetos) – apenas linhas com Tipo de objeto = "Total"
+    const balCons = constraints([
+      { key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds },
+      { key: 'Tipo de objeto',    constraint_type: 'equals', value: 'Total' },
+    ]);
+    const balRes = await bubbleGet<{
+      _id: string;
+      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      Quantidade?: number | string;
+    }>(`/api/1.1/obj/${enc('Balancete')}?limit=2000&constraints=${balCons}`);
 
-    // -------- AGREGAÇÃO (LÓGICA REFEITA) --------
-    const dados: Record<number, Record<number, Record<string, {
-      receita: number; objetos: number; despesa_total: number; despesas: Record<string, number>;
-    }>>> = {};
-
+    // -------- AGREGAÇÃO --------
     const categoriasDespesa = [
       'aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'
     ];
 
-    const initAgfData = () => ({
-      receita: 0, objetos: 0, despesa_total: 0,
-      despesas: Object.fromEntries(categoriasDespesa.map(c => [c, 0]))
-    });
+    const dados: Record<number, Record<number, Record<string, {
+      receita: number;
+      objetos: number;
+      despesa_total: number;              // do LançamentoMensal
+      despesas: Record<string, number>;   // por categoria (SubContas)
+    }>>> = {};
 
-    // Passo 1: Processar todas as despesas primeiro
-    for (const d of despesaRes.response.results) {
-      const dateInfo = parseMesAnoStr(d.LançamentoMensal);
-      const agfNome = agfIdToNome.get(d.AGF);
-
-      if (!dateInfo || !agfNome) continue;
-      const { ano, mes } = dateInfo;
-
+    const ensure = (ano: number, mes: number, agfNome: string) => {
       if (!dados[ano]) dados[ano] = {};
       if (!dados[ano][mes]) dados[ano][mes] = {};
-      if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = initAgfData();
+      if (!dados[ano][mes][agfNome]) {
+        dados[ano][mes][agfNome] = {
+          receita: 0,
+          objetos: 0,
+          despesa_total: 0,
+          despesas: Object.fromEntries(categoriasDespesa.map(c => [c, 0]))
+        };
+      }
+      return dados[ano][mes][agfNome];
+    };
 
-      const catNome = catIdToNome.get(d.Categoria) || d.Categoria;
-      const categoria = normalizeCategoria(catNome);
-      
-      const valor = parseValorBR(d.Valor);
-      dados[ano][mes][agfNome].despesas[categoria] += valor;
-    }
-
-    // Passo 2: Adicionar receitas e objetos aos dados existentes
+    // 5.1) Somar receitas e despesa_total (LM)
     for (const lm of lmRes.response.results) {
-      const ano = parseAno(lm.Ano);
-      const mes = parseMes(lm.Mês);
-      const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
-      const agfNome = agfIdToNome.get(agfId || '');
+      const meta = lmIndex.get(lm._id);
+      if (!meta) continue;
+      const { ano, mes, agfNome } = meta;
+      if (!ano || !mes) continue;
 
-      if (!agfNome || !ano || !mes) continue;
-
-      // Se não houver despesas para este mês/agf, cria a entrada
-      if (!dados[ano]) dados[ano] = {};
-      if (!dados[ano][mes]) dados[ano][mes] = {};
-      if (!dados[ano][mes][agfNome]) dados[ano][mes][agfNome] = initAgfData();
-
-      dados[ano][mes][agfNome].receita += Number(lm.total_receita || 0);
-      dados[ano][mes][agfNome].objetos += Number(lm['Objetos Tratados'] || 0);
+      const entry = ensure(ano, mes, agfNome);
+      entry.receita += Number((lm as any).total_receita || 0);
+      entry.despesa_total += Number((lm as any).total_despesa || 0);
     }
 
-    // Passo 3: Calcular a despesa_total para todas as entradas
-    for (const ano in dados) {
-      for (const mes in dados[ano]) {
-        for (const agfNome in dados[ano][mes]) {
-          const entry = dados[ano][mes][agfNome];
-          entry.despesa_total = Object.values(entry.despesas).reduce((sum, val) => sum + val, 0);
+    // 5.2) Objetos (Balancete – somente "Total")
+    for (const b of balRes.response.results) {
+      const lmField = (b as any)['Lançamento Mensal'] || (b as any)['LançamentoMensal'];
+      let ano = 0, mes = 0, agfNome = 'AGF';
+
+      if (typeof lmField === 'string') {
+        const meta = lmIndex.get(lmField);
+        if (!meta) continue;
+        ano = meta.ano; mes = meta.mes; agfNome = meta.agfNome;
+      } else if (typeof lmField === 'object' && lmField) {
+        ano = parseAno((lmField as any).Ano);
+        mes = parseMes((lmField as any).Mês);
+        const aid = typeof (lmField as any).AGF === 'string' ? (lmField as any).AGF : (lmField as any).AGF?._id;
+        agfNome = agfIdToNome.get(aid || '') || agfNome;
+      }
+      if (!ano || !mes) continue;
+
+      const entry = ensure(ano, mes, agfNome);
+      entry.objetos += parseValorBR((b as any).Quantidade);
+    }
+
+    // 5.3) Despesas por categoria (SubConta)
+    for (const sc of scRes.response.results) {
+      // ano/mes a partir do campo "LançamentoMensal" (ID ou string "m/aaaa")
+      const lmField = (sc as any)['LançamentoMensal'] || (sc as any)['Lançamento Mensal'];
+      let ano = 0, mes = 0, agfNome = 'AGF';
+
+      if (typeof lmField === 'string') {
+        const meta = lmIndex.get(lmField);
+        if (meta) {
+          ano = meta.ano; mes = meta.mes; agfNome = meta.agfNome;
+        } else {
+          const parsed = parseMesAnoStr(lmField);
+          if (parsed) { ano = parsed.ano; mes = parsed.mes; }
+        }
+      } else if (typeof lmField === 'object' && lmField) {
+        ano = parseAno((lmField as any).Ano);
+        mes = parseMes((lmField as any).Mês);
+        const aid = typeof (lmField as any).AGF === 'string' ? (lmField as any).AGF : (lmField as any).AGF?._id;
+        agfNome = agfIdToNome.get(aid || '') || agfNome;
+      }
+
+      // AGF (caso venha direto na SubConta)
+      if ((sc as any).AGF) {
+        const agfField = (sc as any).AGF;
+        const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
+        agfNome = agfIdToNome.get(agfId || '') || agfNome;
+      }
+      if (!ano || !mes) continue;
+
+      const entry = ensure(ano, mes, agfNome);
+
+      // resolver nome da categoria (ID -> nome, ou texto direto)
+      const catRaw = (() => {
+        const c = (sc as any).Categoria;
+        if (!c) return '';
+        if (typeof c === 'string') return catIdToNome.get(c) || c;
+        if (typeof c === 'object') return c.Categoria || c.Nome || c.name || '';
+        return '';
+      })();
+      const categoria = normalizeCategoria(catRaw);
+      const valor = parseValorBR((sc as any).Valor);
+
+      entry.despesas[categoria] = (entry.despesas[categoria] || 0) + valor;
+    }
+
+    // garantir números e chaves
+    for (const anoStr of Object.keys(dados)) {
+      const ano = Number(anoStr);
+      for (const mesStr of Object.keys(dados[ano])) {
+        const mes = Number(mesStr);
+        for (const agfNome of Object.keys(dados[ano][mes])) {
+          const d = dados[ano][mes][agfNome];
+          d.receita = Number(d.receita || 0);
+          d.objetos = Number(d.objetos || 0);
+          d.despesa_total = Number(d.despesa_total || 0);
+          for (const c of categoriasDespesa) d.despesas[c] = Number(d.despesas[c] || 0);
         }
       }
     }
 
     return NextResponse.json({ agfs, categoriasDespesa, dados });
   } catch (e: any) {
-    console.error("Erro na API:", e);
+    console.error('Erro na API:', e);
     return NextResponse.json({ error: e.message || 'Erro Interno do Servidor' }, { status: 500 });
   }
 }
