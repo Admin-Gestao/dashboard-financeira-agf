@@ -2,20 +2,8 @@
 
 import { useState, useMemo, ReactElement, useRef, useEffect } from "react";
 import {
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
-  LabelList,
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, PieChart, Pie, Cell, LabelList
 } from "recharts";
 import { ChevronDown } from "lucide-react";
 
@@ -43,12 +31,17 @@ const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
   }
   return data;
 };
-const agfList = [ { id: "cl", nome: "Campo Limpo" }, { id: "rp", nome: "Republica" }, { id: "sj", nome: "São Jorge" }, { id: "st", nome: "Senador Teotônio" }];
+const agfList = [
+  { id: "cl", nome: "Campo Limpo" },
+  { id: "rp", nome: "Republica" },
+  { id: "sj", nome: "São Jorge" },
+  { id: "st", nome: "Senador Teotônio" }
+];
 const anoList = [2023, 2024, 2025];
 const mesList = Array.from({ length: 12 }, (_, i) => i + 1);
 const mockApiData = {
   agfs: agfList,
-  categoriasDespesa: [ "aluguel", "comissoes", "extras", "honorarios", "impostos", "pitney", "telefone", "veiculos", "folha_pagamento" ],
+  categoriasDespesa: ["aluguel","comissoes","extras","honorarios","impostos","pitney","telefone","veiculos","folha_pagamento"],
   dados: generateMockData(agfList.map((a) => a.nome), anoList, mesList),
 };
 
@@ -167,7 +160,7 @@ export default function DashboardPage() {
     const agfsFiltradas = sourceAgfs.filter((a: any) => idsAgf.includes(a.id));
 
     const totaisPorAgf = agfsFiltradas.map((agf: any) => {
-      let totalReceita = 0, totalObjetos = 0;
+      let totalReceita = 0, totalObjetos = 0, totalDespesaOficial = 0;
       const despesasDetalhadas: Record<string, number> = {};
       sourceCategorias.forEach((cat: string) => (despesasDetalhadas[cat] = 0));
 
@@ -175,8 +168,9 @@ export default function DashboardPage() {
         for (const mes of meses) {
           const d = sourceDados?.[ano]?.[mes]?.[agf.nome];
           if (d) {
-            totalReceita += Number(d.receita ?? 0);
-            totalObjetos += Number(d.objetos ?? 0);
+            totalReceita  += Number(d.receita ?? 0);
+            totalObjetos  += Number(d.objetos ?? 0);
+            totalDespesaOficial += Number(d.despesa_total ?? 0);
             for (const cat of sourceCategorias) {
               despesasDetalhadas[cat] += Number(d.despesas?.[cat] ?? 0);
             }
@@ -184,22 +178,40 @@ export default function DashboardPage() {
         }
       }
 
-      const despesaTotal = Object.values(despesasDetalhadas).reduce((a, b) => a + b, 0);
+      // usa o total oficial se vier do backend; senão, usa a soma das categorias
+      const somaCategorias = Object.values(despesasDetalhadas).reduce((a, b) => a + b, 0);
+      const despesaTotal = totalDespesaOficial > 0 ? totalDespesaOficial : somaCategorias;
+
       const resultado = totalReceita - despesaTotal;
       const margemLucro = totalReceita > 0 ? (resultado / totalReceita) * 100 : 0;
-      const despesaSimulada = Object.entries(despesasDetalhadas).filter(([key]) => !categoriasExcluidas.includes(key)).reduce((acc, [, val]) => acc + val, 0);
-      const resultadoSimulado = totalReceita - despesaSimulada;
-      const margemSimulada = totalReceita > 0 ? (resultadoSimulado / totalReceita) * 100 : 0;
-      const ganhoMargem = margemSimulada - margemLucro;
 
-      return { nome: agf.nome, receita: totalReceita, despesaTotal, resultado, margemLucro, objetos: totalObjetos, despesasDetalhadas, margemLucroReal: margemLucro, ganhoMargem: ganhoMargem > 0 ? ganhoMargem : 0 };
+      // simulação: remove categorias excluídas
+      const despesaSimulada = Object.entries(despesasDetalhadas)
+        .filter(([key]) => !categoriasExcluidas.includes(key))
+        .reduce((acc, [, val]) => acc + val, 0);
+      const despesaBaseSimul = totalDespesaOficial > 0 ? Math.min(despesaSimulada, despesaTotal) : despesaSimulada;
+      const resultadoSimulado = totalReceita - despesaBaseSimul;
+      const margemSimulada = totalReceita > 0 ? (resultadoSimulado / totalReceita) * 100 : 0;
+      const ganhoMargem = Math.max(0, margemSimulada - margemLucro);
+
+      return {
+        nome: agf.nome,
+        receita: totalReceita,
+        despesaTotal,
+        resultado,
+        margemLucro,
+        objetos: totalObjetos,
+        despesasDetalhadas,
+        margemLucroReal: margemLucro,
+        ganhoMargem
+      };
     });
 
     const totaisGerais = {
-      receita: totaisPorAgf.reduce((a, b) => a + b.receita, 0),
-      despesa: totaisPorAgf.reduce((a, b) => a + b.despesaTotal, 0),
+      receita:  totaisPorAgf.reduce((a, b) => a + b.receita, 0),
+      despesa:  totaisPorAgf.reduce((a, b) => a + b.despesaTotal, 0),
       resultado: totaisPorAgf.reduce((a, b) => a + b.resultado, 0),
-      objetos: totaisPorAgf.reduce((a, b) => a + b.objetos, 0),
+      objetos:  totaisPorAgf.reduce((a, b) => a + b.objetos, 0),
     };
 
     const evolucaoResultado = mesList.map((mes) => {
@@ -209,30 +221,35 @@ export default function DashboardPage() {
         for (const agf of agfsFiltradas) {
           const d = sourceDados?.[ano]?.[mes]?.[agf.nome];
           if (d) {
-            const despesaMes: number = Object.values(d.despesas ?? {}).reduce<number>(
-              (sum: number, v: any) => sum + Number(v ?? 0),
-              0
-            );
+            const despesaMes = Number(d.despesa_total ?? 0) ||
+              Object.values(d.despesas ?? {}).reduce<number>((sum: number, v: any) => sum + Number(v ?? 0), 0);
             resultadoMes += (Number(d.receita ?? 0) - despesaMes);
           }
         }
       }
-      return { mes: new Date(2000, mes - 1).toLocaleString("pt-BR", { month: "short" }).replace('.','').toUpperCase(), resultado: resultadoMes };
+      return {
+        mes: new Date(2000, mes - 1).toLocaleString("pt-BR", { month: "short" }).replace('.','').toUpperCase(),
+        resultado: resultadoMes
+      };
     });
 
     return { totaisPorAgf, totaisGerais, evolucaoResultado };
   }, [agfsSelecionadas, mesesSelecionados, anosSelecionados, categoriasExcluidas, sourceAgfs, sourceCategorias, sourceDados, anosDisponiveis]);
 
-  const handleMultiSelect = (setter: Function, value: any) => setter((prev: any[]) => prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]);
+  const handleMultiSelect = (setter: Function, value: any) =>
+    setter((prev: any[]) => prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]);
   const currencyFormatter = (value: number) => Number(value ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-  const percentFormatter = (value: number) => `${Number(value ?? 0).toFixed(1)}%`;
-  const numberFormatter = (value: number) => Number(value ?? 0).toLocaleString("pt-BR");
+  const percentFormatter  = (value: number) => `${Number(value ?? 0).toFixed(1)}%`;
+  const numberFormatter   = (value: number) => Number(value ?? 0).toLocaleString("pt-BR");
   const compactNumberFormatter = (value: number) => Number(value ?? 0).toLocaleString("pt-BR", { notation: "compact" });
   const CORES = { receita: "#4AA8FF", despesa: "#E74C3C", resultado: "#48DB8A", objetos: "#F2C14E", margem: "#A974F8", simulacaoReal: "#A974F8", simulacaoGanho: "#F4D35E" };
 
-  if (loading) return <div className="flex items-center justify-center h-screen bg-background-start text-white"><div className="p-6 text-lg">Carregando dados…</div></div>;
-  if (error) return <div className="flex items-center justify-center h-screen bg-background-start text-red-400"><div className="p-6 bg-card rounded-lg">{error}</div></div>;
-  if (!empresaId && !apiData) return <div className="flex items-center justify-center h-screen bg-background-start text-white"><div className="p-6 text-lg">ID da empresa não fornecido. Adicione `?empresa_id=...` à URL.</div></div>;
+  if (loading)
+    return <div className="flex items-center justify-center h-screen bg-background-start text-white"><div className="p-6 text-lg">Carregando dados…</div></div>;
+  if (error)
+    return <div className="flex items-center justify-center h-screen bg-background-start text-red-400"><div className="p-6 bg-card rounded-lg">{error}</div></div>;
+  if (!empresaId && !apiData)
+    return <div className="flex items-center justify-center h-screen bg-background-start text-white"><div className="p-6 text-lg">ID da empresa não fornecido. Adicione `?empresa_id=...` à URL.</div></div>;
 
   return (
     <div className="p-4 md:p-8 bg-background-start text-text min-h-screen">
@@ -253,7 +270,12 @@ export default function DashboardPage() {
         <section>
           <ChartContainer title="Resultado ao longo do tempo" className="h-[300px]">
             <AreaChart data={dadosProcessados.evolucaoResultado} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
-              <defs><linearGradient id="colorResultado" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#F2935C" stopOpacity={0.8} /><stop offset="95%" stopColor="#1F1F3C" stopOpacity={0.1} /></linearGradient></defs>
+              <defs>
+                <linearGradient id="colorResultado" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#F2935C" stopOpacity={0.8} />
+                  <stop offset="95%" stopColor="#1F1F3C" stopOpacity={0.1} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="mes" stroke="#E9F2FF" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
               <YAxis stroke="#E9F2FF" tickFormatter={compactNumberFormatter} tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
@@ -269,7 +291,9 @@ export default function DashboardPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} /><YAxis hide />
               <Tooltip content={<CustomTooltip formatter={currencyFormatter} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
-              <Bar dataKey="receita" fill={CORES.receita} name="Receita"><LabelList dataKey="receita" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} /></Bar>
+              <Bar dataKey="receita" fill={CORES.receita} name="Receita">
+                <LabelList dataKey="receita" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} />
+              </Bar>
             </BarChart>
           </ChartContainer>
           <ChartContainer title="Comparativo de Despesa" className="h-[280px]">
@@ -277,7 +301,9 @@ export default function DashboardPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} /><YAxis hide />
               <Tooltip content={<CustomTooltip formatter={currencyFormatter} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
-              <Bar dataKey="despesaTotal" fill={CORES.despesa} name="Despesa"><LabelList dataKey="despesaTotal" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} /></Bar>
+              <Bar dataKey="despesaTotal" fill={CORES.despesa} name="Despesa">
+                <LabelList dataKey="despesaTotal" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} />
+              </Bar>
             </BarChart>
           </ChartContainer>
           <ChartContainer title="Comparativo de Resultado" className="h-[280px]">
@@ -285,7 +311,9 @@ export default function DashboardPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} /><YAxis hide />
               <Tooltip content={<CustomTooltip formatter={currencyFormatter} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
-              <Bar dataKey="resultado" fill={CORES.resultado} name="Resultado"><LabelList dataKey="resultado" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} /></Bar>
+              <Bar dataKey="resultado" fill={CORES.resultado} name="Resultado">
+                <LabelList dataKey="resultado" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} />
+              </Bar>
             </BarChart>
           </ChartContainer>
           <ChartContainer title="Comparativo de Margem de Lucro (%)" className="h-[280px]">
@@ -293,7 +321,9 @@ export default function DashboardPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} /><YAxis hide />
               <Tooltip content={<CustomTooltip formatter={percentFormatter} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
-              <Bar dataKey="margemLucro" fill={CORES.margem} name="Margem"><LabelList dataKey="margemLucro" position="top" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} /></Bar>
+              <Bar dataKey="margemLucro" fill={CORES.margem} name="Margem">
+                <LabelList dataKey="margemLucro" position="top" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} />
+              </Bar>
             </BarChart>
           </ChartContainer>
         </section>
@@ -305,23 +335,34 @@ export default function DashboardPage() {
               <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
               <YAxis tickFormatter={compactNumberFormatter} tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
               <Tooltip content={<CustomTooltip formatter={currencyFormatter} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
-              <Bar dataKey="despesasDetalhadas.folha_pagamento" fill="#4472CA" name="Folha de Pagamento"><LabelList dataKey="despesasDetalhadas.folha_pagamento" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} /></Bar>
+              <Bar dataKey="despesasDetalhadas.folha_pagamento" fill="#4472CA" name="Folha de Pagamento">
+                <LabelList dataKey="despesasDetalhadas.folha_pagamento" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} />
+              </Bar>
             </BarChart>
           </ChartContainer>
           <ChartContainer title="Total Gasto em Veículos por AGF" className="h-[350px]">
             <PieChart>
               <Tooltip formatter={currencyFormatter} />
               <Legend wrapperStyle={{ fontSize: "12px", opacity: 0.8 }} />
-              <Pie data={dadosProcessados.totaisPorAgf} dataKey="despesasDetalhadas.veiculos" nameKey="nome" cx="50%" cy="50%" outerRadius={100} labelLine={false}
+              <Pie
+                data={dadosProcessados.totaisPorAgf}
+                dataKey="despesasDetalhadas.veiculos"
+                nameKey="nome"
+                cx="50%" cy="50%" outerRadius={100}
+                labelLine={false}
                 label={({ cx, cy, midAngle, innerRadius, outerRadius, payload }) => {
                   const radius = innerRadius + (outerRadius - innerRadius) * 1.2;
                   const x = cx + radius * Math.cos(-midAngle * (Math.PI / 180));
                   const y = cy + radius * Math.sin(-midAngle * (Math.PI / 180));
                   const value = Number((payload as any)?.despesasDetalhadas?.veiculos ?? 0);
-                  return (<text x={x} y={y} fill="white" textAnchor={x > cx ? "start" : "end"} dominantBaseline="central" fontSize={12}>{compactNumberFormatter(value)}</text>);
+                  return (<text x={x} y={y} fill="white" textAnchor={x > cx ? "start" : "end"} dominantBaseline="central" fontSize={12}>
+                    {compactNumberFormatter(value)}
+                  </text>);
                 }}
               >
-                {dadosProcessados.totaisPorAgf.map((_, index) => (<Cell key={`cell-${index}`} fill={["#F2935C", "#BF6550", "#4472CA", "#48DB8A"][index % 4]} />))}
+                {dadosProcessados.totaisPorAgf.map((_, index) => (
+                  <Cell key={`cell-${index}`} fill={["#F2935C", "#BF6550", "#4472CA", "#48DB8A"][index % 4]} />
+                ))}
               </Pie>
             </PieChart>
           </ChartContainer>
@@ -358,7 +399,11 @@ export default function DashboardPage() {
                       <td className="p-2 font-semibold">{agf.nome}</td>
                       {sourceCategorias.map((cat: string) => {
                         const val = Number((agf.despesasDetalhadas as any)?.[cat] ?? 0);
-                        return (<td key={cat} className="p-2 text-right text-destructive/90">{val.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 0 })}</td>);
+                        return (
+                          <td key={cat} className="p-2 text-right text-destructive/90">
+                            {val.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 0 })}
+                          </td>
+                        );
                       })}
                     </tr>
                   ))}
@@ -374,8 +419,13 @@ export default function DashboardPage() {
             <p className="text-sm text-text/80 mb-2">Selecione despesas para excluir do cálculo:</p>
             <div className="flex flex-wrap gap-2">
               {sourceCategorias.map((cat: string) => (
-                <button key={cat} onClick={() => handleMultiSelect(setCategoriasExcluidas, cat)}
-                  className={`px-3 py-1 text-xs rounded-full transition-colors capitalize ${categoriasExcluidas.includes(cat) ? "bg-primary text-white" : "bg-gray-600/50 text-text/80"}`}>
+                <button
+                  key={cat}
+                  onClick={() => handleMultiSelect(setCategoriasExcluidas, cat)}
+                  className={`px-3 py-1 text-xs rounded-full transition-colors capitalize ${
+                    categoriasExcluidas.includes(cat) ? "bg-primary text-white" : "bg-gray-600/50 text-text/80"
+                  }`}
+                >
                   {cat.replace(/_/g, " ")}
                 </button>
               ))}
@@ -388,8 +438,12 @@ export default function DashboardPage() {
               <YAxis type="category" dataKey="nome" stroke="#E9F2FF" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} width={80} />
               <Tooltip content={<CustomTooltip formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
               <Legend wrapperStyle={{ fontSize: "12px", opacity: 0.8 }} />
-              <Bar dataKey="margemLucroReal" stackId="a" fill={CORES.simulacaoReal} name="Margem Real"><LabelList dataKey="margemLucroReal" position="center" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} /></Bar>
-              <Bar dataKey="ganhoMargem" stackId="a" fill={CORES.simulacaoGanho} name="Ganho de Margem"><LabelList dataKey="ganhoMargem" position="center" formatter={(v: number) => v > 0 ? `+${Number(v ?? 0).toFixed(1)}%` : ''} style={{ fill: "#010326", fontSize: 12, fontWeight: "bold" }} /></Bar>
+              <Bar dataKey="margemLucroReal" stackId="a" fill="#A974F8" name="Margem Real">
+                <LabelList dataKey="margemLucroReal" position="center" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} />
+              </Bar>
+              <Bar dataKey="ganhoMargem" stackId="a" fill="#F4D35E" name="Ganho de Margem">
+                <LabelList dataKey="ganhoMargem" position="center" formatter={(v: number) => v > 0 ? `+${Number(v ?? 0).toFixed(1)}%` : ''} style={{ fill: "#010326", fontSize: 12, fontWeight: "bold" }} />
+              </Bar>
             </BarChart>
           </ChartContainer>
         </section>
