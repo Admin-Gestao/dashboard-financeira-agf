@@ -375,6 +375,61 @@ export default function DashboardPage() {
           </ChartContainer>
         </section>
 
+        {/* === TABELAS — sempre presentes === */}
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <div className="lg:col-span-1 bg-card p-4 rounded-lg">
+            <h3 className="font-bold mb-4 text-text">Objetos Tratados</h3>
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-primary/20">
+                  <th className="p-2">AGF</th>
+                  <th className="p-2 text-right">Quantidade</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(dadosProcessados.totaisPorAgf.length ? dadosProcessados.totaisPorAgf : [{ nome: "—", objetos: 0 }]).map((agf: any) => (
+                  <tr key={agf.nome} className="border-b border-white/10">
+                    <td className="p-2 font-semibold">{agf.nome}</td>
+                    <td className="p-2 text-right">{Number(agf.objetos ?? 0).toLocaleString("pt-BR")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="lg:col-span-2 bg-card p-4 rounded-lg">
+            <h3 className="font-bold mb-4 text-text">Despesas por Categoria</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-primary/20">
+                    <th className="p-2">AGF</th>
+                    {sourceCategorias.map((cat: string) => (
+                      <th key={cat} className="p-2 text-right capitalize">{cat.replace(/_/g, " ")}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(dadosProcessados.totaisPorAgf.length ? dadosProcessados.totaisPorAgf : [{ nome: "—", despesasDetalhadas: {} as any }]).map((agf: any) => (
+                    <tr key={agf.nome} className="border-b border-white/10">
+                      <td className="p-2 font-semibold">{agf.nome}</td>
+                      {sourceCategorias.map((cat: string) => {
+                        const val = Number((agf.despesasDetalhadas as any)?.[cat] ?? 0);
+                        return (
+                          <td key={cat} className="p-2 text-right text-destructive/90">
+                            {val.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 0 })}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+        {/* === /TABELAS === */}
+
         <section className="bg-card p-4 rounded-lg">
           <h3 className="font-bold mb-4 text-text">Simulação de Margem de Lucro</h3>
           <div className="mb-4">
