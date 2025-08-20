@@ -7,7 +7,7 @@ import {
 } from "recharts";
 import { ChevronDown } from "lucide-react";
 
-// --- DADOS MOCKADOS (para fallback, caso a API não carregue) ---
+/* ===================== MOCK (fallback) ===================== */
 const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
   const data: any = {};
   for (const ano of anos) {
@@ -20,11 +20,15 @@ const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
         data[ano][mes][agf] = {
           receita,
           objetos: Math.floor((receita / 4) * (1 + (Math.random() - 0.5) * 0.1)),
+          // IMPORTANTE: no mock, despesa_total é independente das categorias,
+          // exatamente como no back passa a ser (LM é a fonte da verdade)
+          despesa_total: receita * 0.6,
           despesas: {
             aluguel: receita * 0.08, comissoes: receita * 0.05, extras: receita * 0.02,
             folha_pagamento: receita * 0.35, impostos: receita * 0.1, veiculos: receita * 0.12,
             telefone: receita * 0.01, honorarios: receita * 0.03, pitney: receita * 0.015,
           },
+          despesa_subcontas_total: receita * 0.66
         };
       }
     }
@@ -45,7 +49,7 @@ const mockApiData = {
   dados: generateMockData(agfList.map((a) => a.nome), anoList, mesList),
 };
 
-// --- COMPONENTES DE UI ---
+/* ===================== UI ===================== */
 const Card = ({ title, value, borderColor, valueColor }: { title: string; value: string; borderColor: string; valueColor?: string; }) => (
   <div className="bg-card p-4 rounded-lg border-l-4" style={{ borderColor }}>
     <h3 className="text-sm text-text/80 font-semibold">{title}</h3>
@@ -105,7 +109,7 @@ const MultiSelectFilter = ({ name, options, selected, onSelect }: { name: string
   );
 };
 
-// --- PÁGINA PRINCIPAL DO DASHBOARD ---
+/* ===================== PAGE ===================== */
 export default function DashboardPage() {
   const [empresaId, setEmpresaId] = useState<string | null>(null);
   const [apiData, setApiData] = useState<any>(null);
@@ -160,7 +164,7 @@ export default function DashboardPage() {
     const agfsFiltradas = sourceAgfs.filter((a: any) => idsAgf.includes(a.id));
 
     const totaisPorAgf = agfsFiltradas.map((agf: any) => {
-      let totalReceita = 0, totalObjetos = 0, totalDespesaOficial = 0;
+      let totalReceita = 0, totalObjetos = 0, totalDespesaLM = 0;
       const despesasDetalhadas: Record<string, number> = {};
       sourceCategorias.forEach((cat: string) => (despesasDetalhadas[cat] = 0));
 
@@ -168,9 +172,13 @@ export default function DashboardPage() {
         for (const mes of meses) {
           const d = sourceDados?.[ano]?.[mes]?.[agf.nome];
           if (d) {
+            // === FONTE DA VERDADE ===
             totalReceita  += Number(d.receita ?? 0);
             totalObjetos  += Number(d.objetos ?? 0);
-            totalDespesaOficial += Number(d.despesa_total ?? 0);
+            // usa exatamente o total_despesa vindo do Lançamento Mensal
+            totalDespesaLM += Number(d.despesa_total ?? 0);
+
+            // categorias das subcontas (apenas para gráficos por categoria / tabelas)
             for (const cat of sourceCategorias) {
               despesasDetalhadas[cat] += Number(d.despesas?.[cat] ?? 0);
             }
@@ -178,23 +186,19 @@ export default function DashboardPage() {
         }
       }
 
-      const somaCategorias = Object.values(despesasDetalhadas).reduce((a, b) => a + b, 0);
-      const despesaTotal = totalDespesaOficial > 0 ? totalDespesaOficial : somaCategorias;
-
-      const resultado = totalReceita - despesaTotal;
+      const resultado = totalReceita - totalDespesaLM;
       const margemLucro = totalReceita > 0 ? (resultado / totalReceita) * 100 : 0;
 
-      // SIMULAÇÃO — remove SOMENTE as categorias selecionadas (categoriasExcluidas)
+      // SIMULAÇÃO — remove SOMENTE as categorias selecionadas,
+      // mas nunca reduz abaixo do total oficial (LM) por causa de arredondamentos
       let despesaSimulada = 0;
       if (categoriasExcluidas.length === 0) {
-        // sem exclusões -> simulado = real
-        despesaSimulada = despesaTotal;
+        despesaSimulada = totalDespesaLM;
       } else {
         despesaSimulada = Object.entries(despesasDetalhadas)
-          .filter(([key]) => !categoriasExcluidas.includes(key)) // mantém as não excluídas
-          .reduce((acc, [, val]) => acc + val, 0);
-        // se houver valor oficial, limita ao oficial (evita “ganho” por diferenças de arredondamento)
-        if (totalDespesaOficial > 0) despesaSimulada = Math.min(despesaSimulada, despesaTotal);
+          .filter(([key]) => !categoriasExcluidas.includes(key))
+          .reduce((acc, [, val]) => acc + Number(val || 0), 0);
+        despesaSimulada = Math.min(despesaSimulada, totalDespesaLM);
       }
 
       const resultadoSimulado = totalReceita - despesaSimulada;
@@ -204,7 +208,7 @@ export default function DashboardPage() {
       return {
         nome: agf.nome,
         receita: totalReceita,
-        despesaTotal,
+        despesaTotal: totalDespesaLM, // agora 100% LM
         resultado,
         margemLucro,
         objetos: totalObjetos,
@@ -228,9 +232,8 @@ export default function DashboardPage() {
         for (const agf of agfsFiltradas) {
           const d = sourceDados?.[ano]?.[mes]?.[agf.nome];
           if (d) {
-            const despesaMes = Number(d.despesa_total ?? 0) ||
-              Object.values(d.despesas ?? {}).reduce<number>((sum: number, v: any) => sum + Number(v ?? 0), 0);
-            resultadoMes += (Number(d.receita ?? 0) - despesaMes);
+            // resultado mês = receita LM - despesa LM (sem recomputar por categorias)
+            resultadoMes += Number(d.receita ?? 0) - Number(d.despesa_total ?? 0);
           }
         }
       }
@@ -375,61 +378,7 @@ export default function DashboardPage() {
           </ChartContainer>
         </section>
 
-        {/* === TABELAS — sempre presentes === */}
-        <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          <div className="lg:col-span-1 bg-card p-4 rounded-lg">
-            <h3 className="font-bold mb-4 text-text">Objetos Tratados</h3>
-            <table className="w-full text-left text-sm">
-              <thead>
-                <tr className="border-b border-primary/20">
-                  <th className="p-2">AGF</th>
-                  <th className="p-2 text-right">Quantidade</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(dadosProcessados.totaisPorAgf.length ? dadosProcessados.totaisPorAgf : [{ nome: "—", objetos: 0 }]).map((agf: any) => (
-                  <tr key={agf.nome} className="border-b border-white/10">
-                    <td className="p-2 font-semibold">{agf.nome}</td>
-                    <td className="p-2 text-right">{Number(agf.objetos ?? 0).toLocaleString("pt-BR")}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="lg:col-span-2 bg-card p-4 rounded-lg">
-            <h3 className="font-bold mb-4 text-text">Despesas por Categoria</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-primary/20">
-                    <th className="p-2">AGF</th>
-                    {sourceCategorias.map((cat: string) => (
-                      <th key={cat} className="p-2 text-right capitalize">{cat.replace(/_/g, " ")}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(dadosProcessados.totaisPorAgf.length ? dadosProcessados.totaisPorAgf : [{ nome: "—", despesasDetalhadas: {} as any }]).map((agf: any) => (
-                    <tr key={agf.nome} className="border-b border-white/10">
-                      <td className="p-2 font-semibold">{agf.nome}</td>
-                      {sourceCategorias.map((cat: string) => {
-                        const val = Number((agf.despesasDetalhadas as any)?.[cat] ?? 0);
-                        return (
-                          <td key={cat} className="p-2 text-right text-destructive/90">
-                            {val.toLocaleString("pt-BR", { style: "currency", currency: "BRL", minimumFractionDigits: 0 })}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-        {/* === /TABELAS === */}
-
+        {/* ===================== SIMULAÇÃO ===================== */}
         <section className="bg-card p-4 rounded-lg">
           <h3 className="font-bold mb-4 text-text">Simulação de Margem de Lucro</h3>
           <div className="mb-4">
@@ -456,16 +405,11 @@ export default function DashboardPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis type="number" domain={[0, 100]} tickFormatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
               <YAxis type="category" dataKey="nome" stroke="#E9F2FF" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} width={90} />
-              <Tooltip
-                content={<CustomTooltip formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} />}
-                cursor={{ fill: "rgba(255, 255, 255, 0.1)" }}
-              />
+              <Tooltip content={<CustomTooltip formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
               <Legend wrapperStyle={{ fontSize: "12px", opacity: 0.8 }} />
-              {/* Margem Real (sempre visível) */}
               <Bar dataKey="margemLucroReal" stackId="a" fill="#A974F8" name="Margem Real">
                 <LabelList dataKey="margemLucroReal" position="center" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} />
               </Bar>
-              {/* Ganho de Margem (só aparece quando houver exclusões) */}
               {categoriasExcluidas.length > 0 && (
                 <Bar dataKey="ganhoMargem" stackId="a" fill="#F4D35E" name="Ganho de Margem">
                   <LabelList
@@ -478,6 +422,67 @@ export default function DashboardPage() {
               )}
             </BarChart>
           </ChartContainer>
+        </section>
+
+        {/* ===================== TABELAS (sempre visíveis) ===================== */}
+        <section className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Objetos tratados */}
+          <div className="bg-card p-4 rounded-lg">
+            <h3 className="font-bold mb-4 text-text">Objetos tratados</h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-text/70 border-b border-white/10">
+                    <th className="py-2 px-2">AGF</th>
+                    <th className="py-2 px-2 text-right">Quantidade</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dadosProcessados.totaisPorAgf.length === 0 ? (
+                    <tr><td className="py-3 px-2" colSpan={2}>Sem dados.</td></tr>
+                  ) : (
+                    dadosProcessados.totaisPorAgf.map((r) => (
+                      <tr key={r.nome} className="border-b border-white/5">
+                        <td className="py-2 px-2">{r.nome}</td>
+                        <td className="py-2 px-2 text-right">{numberFormatter(r.objetos)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Despesas por categoria */}
+          <div className="bg-card p-4 rounded-lg">
+            <h3 className="font-bold mb-4 text-text">Despesas por categoria</h3>
+            <div className="overflow-x-auto">
+              <table className="min-w-[700px] w-full text-sm">
+                <thead>
+                  <tr className="text-left text-text/70 border-b border-white/10">
+                    <th className="py-2 px-2">AGF</th>
+                    {sourceCategorias.map((c: string) => (
+                      <th key={c} className="py-2 px-2 text-right capitalize">{c.replace(/_/g," ")}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {dadosProcessados.totaisPorAgf.length === 0 ? (
+                    <tr><td className="py-3 px-2" colSpan={1 + sourceCategorias.length}>Sem dados.</td></tr>
+                  ) : (
+                    dadosProcessados.totaisPorAgf.map((r) => (
+                      <tr key={r.nome} className="border-b border-white/5">
+                        <td className="py-2 px-2">{r.nome}</td>
+                        {sourceCategorias.map((c: string) => (
+                          <td key={c} className="py-2 px-2 text-right">{currencyFormatter(r.despesasDetalhadas[c] || 0)}</td>
+                        ))}
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </section>
       </main>
     </div>
