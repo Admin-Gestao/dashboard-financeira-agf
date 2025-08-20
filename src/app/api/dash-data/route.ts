@@ -63,12 +63,8 @@ async function bubbleGet<T>(path: string) {
   return (await res.json()) as { response: { results: T[] } };
 }
 
-/** ===== Mapeamentos de categorias (robusto) =====
- *  1) por ID (prioritário) — baseado nos IDs do seu dump
- *  2) por nome (fallback) — com sinônimos e acentos
- */
+/** ===== Mapas de categoria ===== */
 const CAT_ID_TO_KEY: Record<string, string> = {
-  // Campo Limpo (seus IDs)
   '1751034521134x718767032318296000': 'aluguel',
   '1751034485642x432154856311750660': 'extras',
   '1751034473039x889328518957629400': 'honorarios',
@@ -76,9 +72,8 @@ const CAT_ID_TO_KEY: Record<string, string> = {
   '1751034431059x728921665608876000': 'pitney',
   '1751034541896x868439199319326700': 'telefone',
   '1751034565744x102496125839998980': 'veiculos',
-  '1751034502993x140272905276620800': 'veiculos',         // pedágio/combustível etc.
+  '1751034502993x140272905276620800': 'veiculos',
   '1754514204139x526063856276349100': 'folha_pagamento',
-  // (adicione aqui, se necessário, IDs de "Comissões" ou outras categorias do seu Bubble)
 };
 
 function normalizeCategoriaNome(input: any): string {
@@ -124,10 +119,10 @@ export async function GET(req: Request) {
       `/api/1.1/obj/${enc('AGF')}?limit=200&constraints=${constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }])}`
     );
     const agfs = agfRes.response.results.map(a => ({ id: a._id, nome: (a as any)['Nome da AGF'] || a.name || a._id }));
-    const agfIdToNome = new Map(agfs.map(a => [a.id, a.nome]));
+    const agfIdToNome = new Map(agfs.map(a => [a.id, a.nome] as const));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) Lançamentos Mensais (fonte oficial)
+    // 2) Lançamentos Mensais
     const lmRes = await bubbleGet<{
       _id: string; Ano?: any; Mês?: any; Data?: string;
       AGF?: string | { _id: string };
@@ -142,7 +137,8 @@ export async function GET(req: Request) {
       const agfNome = agfIdToNome.get(agfId || '') || agfId || 'AGF';
       if (lm._id && ano && mes) lmIndex.set(lm._id, { ano, mes, agfNome });
     }
-    const lmIds = [...lmIndex.keys()];
+    // ❗️Corrigido: nada de spread em iterator
+    const lmIds = Array.from(lmIndex.keys());
 
     // 3) Categoria Despesa (id -> nome)
     const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string }>(
@@ -152,7 +148,7 @@ export async function GET(req: Request) {
       catRes.response.results.map(c => [c._id, (c as any).Categoria || (c as any).Nome || (c as any).name || ''])
     );
 
-    // 4) SubContas (detalhamento por categoria)
+    // 4) SubContas
     const scRes = await bubbleGet<{
       _id: string;
       AGF?: string | { _id: string };
@@ -173,7 +169,6 @@ export async function GET(req: Request) {
     ])}`);
 
     /** ===== Estrutura de saída ===== */
-    // colunas padrão + qualquer outra que surgir mapeada pelos nomes/ids
     const categoriasBase = ['aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'];
     const categoriasVistas = new Set<string>(categoriasBase);
 
@@ -186,9 +181,10 @@ export async function GET(req: Request) {
       if (!dados[ano]) dados[ano] = {};
       if (!dados[ano][mes]) dados[ano][mes] = {};
       if (!dados[ano][mes][agfNome]) {
+        const cols = Array.from(categoriasVistas);
         dados[ano][mes][agfNome] = {
           receita: 0, objetos: 0, despesa_total: 0,
-          despesas: Object.fromEntries([...categoriasVistas].map(c => [c, 0]))
+          despesas: Object.fromEntries(cols.map(c => [c, 0] as const))
         };
       }
       return dados[ano][mes][agfNome];
@@ -214,23 +210,20 @@ export async function GET(req: Request) {
       entry.objetos += parseValorBR((b as any).Quantidade);
     }
 
-    // SubContas -> categorias (robusto por ID e nome)
+    // SubContas -> categorias
     for (const sc of scRes.response.results) {
-      // LM do item
       const lmField = (sc as any)['LançamentoMesnal'] ?? (sc as any)['LançamentoMensal'] ?? (sc as any)['Lançamento Mensal'];
       let meta: any = null;
       if (typeof lmField === 'string') meta = lmIndex.get(lmField);
       else if (lmField && typeof lmField === 'object') meta = lmIndex.get((lmField as any)._id);
       if (!meta) continue;
 
-      // AGF (se vier direto na SubConta, usa)
       let agfNome = meta.agfNome;
       if ((sc as any).AGF) {
         const agfId = typeof (sc as any).AGF === 'string' ? (sc as any).AGF : (sc as any).AGF?._id;
         agfNome = agfIdToNome.get(agfId || '') || agfNome;
       }
 
-      // Categoria
       let catId = '';
       let catNome = '';
       const raw = (sc as any).Categoria;
@@ -243,23 +236,20 @@ export async function GET(req: Request) {
       categoriasVistas.add(key);
 
       const valor = parseValorBR((sc as any).Valor);
-
       const entry = ensure(meta.ano, meta.mes, agfNome);
-      if (!(key in entry.despesas)) entry.despesas[key] = 0;   // garante coluna nova
+      if (!(key in entry.despesas)) entry.despesas[key] = 0;
       entry.despesas[key] += valor;
       entry.despesa_subcontas_total = (entry.despesa_subcontas_total || 0) + valor;
     }
 
-    // Normalização final (preenche zeros para colunas novas)
+    // Normalização final
     for (const anoStr of Object.keys(dados)) {
       const ano = Number(anoStr);
       for (const mesStr of Object.keys(dados[ano])) {
         const mes = Number(mesStr);
         for (const agfNome of Object.keys(dados[ano][mes])) {
           const d = dados[ano][mes][agfNome];
-          for (const c of categoriasVistas) {
-            d.despesas[c] = Number(d.despesas[c] || 0);
-          }
+          for (const c of Array.from(categoriasVistas)) d.despesas[c] = Number(d.despesas[c] || 0);
           d.receita = Number(d.receita || 0);
           d.objetos = Number(d.objetos || 0);
           d.despesa_total = Number(d.despesa_total || 0);
@@ -270,7 +260,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       agfs,
-      categoriasDespesa: [...categoriasVistas], // envia todas (base + vistas)
+      categoriasDespesa: Array.from(categoriasVistas),
       dados
     });
   } catch (e: any) {
