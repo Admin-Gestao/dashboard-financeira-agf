@@ -31,7 +31,6 @@ function parseAno(v: any): number {
   const n = Number(s.replace(/[^\d]/g, ''));
   return Number.isFinite(n) ? n : 0;
 }
-
 function parseMes(v: any): number {
   if (typeof v === 'number') return v;
   if (typeof v === 'string') {
@@ -42,8 +41,6 @@ function parseMes(v: any): number {
     .normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   return MESES[s] ?? 0;
 }
-
-// "04/2025" -> { mes:4, ano:2025 }   e também "4/2025"
 function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   if (typeof s !== 'string') return null;
   const m = s.match(/^\s*([01]?\d)\s*\/\s*(\d{4})\s*$/);
@@ -53,8 +50,6 @@ function parseMesAnoStr(s: any): { mes: number; ano: number } | null {
   if (mes>=1 && mes<=12 && ano>1900) return { mes, ano };
   return null;
 }
-
-// "1.234,56" / "R$ 1.234,56" -> 1234.56
 function parseValorBR(v: any): number {
   if (typeof v === 'number') return v;
   if (typeof v !== 'string') return 0;
@@ -67,7 +62,7 @@ function parseValorBR(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-// Normaliza as categorias para as chaves usadas no front
+// normaliza categorias das SubContas para chaves fixas do front
 function normalizeCategoria(input: any): string {
   const raw = String(input || '').trim();
   const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
@@ -90,7 +85,7 @@ function normalizeCategoria(input: any): string {
   if (s.includes('pitney')) return 'pitney';
   if (s.includes('telef')) return 'telefone';
   if (s.includes('veic')) return 'veiculos';
-  if (s.includes('impost')) return 'impostos';
+  if (s.includes('impost') || s === 'pis' || s === 'cofins' || s === 'irrf' || s.includes('iss')) return 'impostos';
   if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
   if (s.includes('extra')) return 'extras';
   return 'extras';
@@ -126,7 +121,7 @@ export async function GET(req: Request) {
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) Lançamentos Mensais da empresa (receita + total_despesa)
+    // 2) Lançamentos Mensais (FONTE OFICIAL para receita/despesa/resultado)
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
     const lmRes = await bubbleGet<{
       _id: string;
@@ -135,10 +130,10 @@ export async function GET(req: Request) {
       AGF: string | { _id: string };
       total_receita?: number;
       total_despesa?: number;
+      resultado_final?: number;
       Data?: string;
     }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
 
-    // Índice LM por _id -> {ano, mes, agfNome}
     const lmIndex = new Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>();
     for (const lm of lmRes.response.results) {
       const ano = parseAno((lm as any).Ano) || parseAno((lm as any).Data?.split('/')[1]);
@@ -160,12 +155,11 @@ export async function GET(req: Request) {
       })
     );
 
-    // 4) SubContas (detalhe das despesas por categoria) – ATENÇÃO: campo "LançamentoMesnal"
+    // 4) SubContas (detalhe das despesas por categoria)
     const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
     const scRes = await bubbleGet<{
       _id: string;
       AGF: string | { _id: string };
-      // no seu app o campo está literalmente escrito assim:
       'LançamentoMesnal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
       'LançamentoMensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
       'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
@@ -173,7 +167,7 @@ export async function GET(req: Request) {
       Valor: number | string;
     }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scCons}`);
 
-    // 5) Balancete (objetos) – somente linhas Tipo de objeto = "Total"
+    // 5) Balancete (objetos) – somente "Total"
     const balCons = constraints([
       { key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds },
       { key: 'Tipo de objeto',    constraint_type: 'equals', value: 'Total' },
@@ -190,10 +184,11 @@ export async function GET(req: Request) {
     ];
 
     const dados: Record<number, Record<number, Record<string, {
-      receita: number;
-      objetos: number;
-      despesa_total: number;
-      despesas: Record<string, number>;
+      receita: number;              // total_receita LM
+      objetos: number;             // balancete
+      despesa_total: number;       // total_despesa LM (FONTE DA VERDADE)
+      despesas: Record<string, number>; // soma das SubContas por categoria
+      despesa_subcontas_total?: number; // soma total das SubContas (apenas informativo)
     }>>> = {};
 
     const ensure = (ano: number, mes: number, agfNome: string) => {
@@ -210,7 +205,7 @@ export async function GET(req: Request) {
       return dados[ano][mes][agfNome];
     };
 
-    // 5.1) Somar receitas e total_despesa (LM)
+    // 5.1) LM -> receita e despesa (oficiais)
     for (const lm of lmRes.response.results) {
       const meta = lmIndex.get(lm._id);
       if (!meta) continue;
@@ -218,7 +213,7 @@ export async function GET(req: Request) {
       if (!ano || !mes) continue;
 
       const entry = ensure(ano, mes, agfNome);
-      entry.receita += Number((lm as any).total_receita || 0);
+      entry.receita       += Number((lm as any).total_receita || 0);
       entry.despesa_total += Number((lm as any).total_despesa || 0);
     }
 
@@ -243,7 +238,7 @@ export async function GET(req: Request) {
       entry.objetos += parseValorBR((b as any).Quantidade);
     }
 
-    // 5.3) Despesas por categoria (SubConta) — agora lendo "LançamentoMesnal"
+    // 5.3) Despesas por categoria (SubContas) – não alteram o total oficial
     for (const sc of scRes.response.results) {
       const lmField =
         (sc as any)['LançamentoMesnal'] ??
@@ -289,23 +284,21 @@ export async function GET(req: Request) {
       const valor = parseValorBR((sc as any).Valor);
 
       entry.despesas[categoria] = (entry.despesas[categoria] || 0) + valor;
+      entry.despesa_subcontas_total = (entry.despesa_subcontas_total || 0) + valor;
     }
 
-    // 5.4) Recalcular despesa_total a partir da soma das categorias (se houver subcontas)
+    // 5.4) Normalizações finais: NÃO sobrescrevemos o total oficial do LM
     for (const anoStr of Object.keys(dados)) {
       const ano = Number(anoStr);
       for (const mesStr of Object.keys(dados[ano])) {
         const mes = Number(mesStr);
         for (const agfNome of Object.keys(dados[ano][mes])) {
           const d = dados[ano][mes][agfNome];
-          // normalizações finais
           d.receita = Number(d.receita || 0);
           d.objetos = Number(d.objetos || 0);
+          d.despesa_total = Number(d.despesa_total || 0);
           for (const c of categoriasDespesa) d.despesas[c] = Number(d.despesas[c] || 0);
-
-          const somaCategorias = Object.values(d.despesas).reduce((a, b) => a + Number(b || 0), 0);
-          if (somaCategorias > 0) d.despesa_total = somaCategorias; // prioriza subcontas quando existem
-          else d.despesa_total = Number(d.despesa_total || 0);     // mantém LM se não houver subcontas
+          d.despesa_subcontas_total = Number(d.despesa_subcontas_total || 0);
         }
       }
     }
