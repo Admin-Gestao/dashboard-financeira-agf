@@ -7,7 +7,7 @@ import {
 } from "recharts";
 import { ChevronDown } from "lucide-react";
 
-/* ===================== MOCK (fallback) ===================== */
+/* ===== MOCK (fallback) ===== */
 const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
   const data: any = {};
   for (const ano of anos) {
@@ -15,16 +15,16 @@ const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
     for (const mes of meses) {
       data[ano][mes] = {};
       for (const agf of agfs) {
-        const receita = 200000;
+        const baseReceita = 50000 + Math.random() * 25000;
+        const receita = baseReceita * (1 + (Math.random() - 0.5) * 0.2);
         data[ano][mes][agf] = {
           receita,
-          objetos: 50000,
-          despesa_total: 187000,
+          objetos: Math.floor((receita / 4) * (1 + (Math.random() - 0.5) * 0.1)),
           despesas: {
-            aluguel: 20000, comissoes: 15000, extras: 5000, honorarios: 3000,
-            impostos: 30000, pitney: 1200, telefone: 800, veiculos: 18000, folha_pagamento: 90000
+            aluguel: receita * 0.08, comissoes: receita * 0.05, extras: receita * 0.02,
+            folha_pagamento: receita * 0.35, impostos: receita * 0.1, veiculos: receita * 0.12,
+            telefone: receita * 0.01, honorarios: receita * 0.03, pitney: receita * 0.015,
           },
-          despesa_subcontas_total: 182000
         };
       }
     }
@@ -33,7 +33,7 @@ const generateMockData = (agfs: string[], anos: number[], meses: number[]) => {
 };
 const agfList = [
   { id: "cl", nome: "Campo Limpo" },
-  { id: "rp", nome: "República" },
+  { id: "rp", nome: "Republica" },
   { id: "sj", nome: "São Jorge" },
   { id: "st", nome: "Senador Teotônio" }
 ];
@@ -45,7 +45,7 @@ const mockApiData = {
   dados: generateMockData(agfList.map((a) => a.nome), anoList, mesList),
 };
 
-/* ===================== UI helpers ===================== */
+/* ===== UI ===== */
 const Card = ({ title, value, borderColor, valueColor }: { title: string; value: string; borderColor: string; valueColor?: string; }) => (
   <div className="bg-card p-4 rounded-lg border-l-4" style={{ borderColor }}>
     <h3 className="text-sm text-text/80 font-semibold">{title}</h3>
@@ -105,7 +105,7 @@ const MultiSelectFilter = ({ name, options, selected, onSelect }: { name: string
   );
 };
 
-/* ===================== PAGE ===================== */
+/* ===== DASHBOARD ===== */
 export default function DashboardPage() {
   const [empresaId, setEmpresaId] = useState<string | null>(null);
   const [apiData, setApiData] = useState<any>(null);
@@ -160,7 +160,7 @@ export default function DashboardPage() {
     const agfsFiltradas = sourceAgfs.filter((a: any) => idsAgf.includes(a.id));
 
     const totaisPorAgf = agfsFiltradas.map((agf: any) => {
-      let totalReceita = 0, totalObjetos = 0, totalDespesaLM = 0;
+      let totalReceita = 0, totalObjetos = 0, totalDespesaOficial = 0;
       const despesasDetalhadas: Record<string, number> = {};
       sourceCategorias.forEach((cat: string) => (despesasDetalhadas[cat] = 0));
 
@@ -170,27 +170,30 @@ export default function DashboardPage() {
           if (d) {
             totalReceita  += Number(d.receita ?? 0);
             totalObjetos  += Number(d.objetos ?? 0);
-            totalDespesaLM += Number(d.despesa_total ?? 0);
-
-            for (const cat of Object.keys(d.despesas || {})) {
-              // aceita colunas novas vindas da API
-              if (!(cat in despesasDetalhadas)) despesasDetalhadas[cat] = 0;
+            totalDespesaOficial += Number(d.despesa_total ?? 0);
+            for (const cat of sourceCategorias) {
               despesasDetalhadas[cat] += Number(d.despesas?.[cat] ?? 0);
             }
           }
         }
       }
 
-      const resultado = totalReceita - totalDespesaLM;
+      const somaCategorias = Object.values(despesasDetalhadas).reduce((a, b) => a + b, 0);
+      const despesaTotal = totalDespesaOficial > 0 ? totalDespesaOficial : somaCategorias;
+
+      const resultado = totalReceita - despesaTotal;
       const margemLucro = totalReceita > 0 ? (resultado / totalReceita) * 100 : 0;
 
-      // simulação (não passa do total oficial)
-      let despesaSimulada = categoriasExcluidas.length === 0
-        ? totalDespesaLM
-        : Object.entries(despesasDetalhadas)
-            .filter(([key]) => !categoriasExcluidas.includes(key))
-            .reduce((acc, [, val]) => acc + Number(val || 0), 0);
-      despesaSimulada = Math.min(despesaSimulada, totalDespesaLM);
+      // SIMULAÇÃO – remove SOMENTE as categorias selecionadas
+      let despesaSimulada = 0;
+      if (categoriasExcluidas.length === 0) {
+        despesaSimulada = despesaTotal;
+      } else {
+        despesaSimulada = Object.entries(despesasDetalhadas)
+          .filter(([key]) => !categoriasExcluidas.includes(key))
+          .reduce((acc, [, val]) => acc + val, 0);
+        if (totalDespesaOficial > 0) despesaSimulada = Math.min(despesaSimulada, despesaTotal);
+      }
 
       const resultadoSimulado = totalReceita - despesaSimulada;
       const margemSimulada = totalReceita > 0 ? (resultadoSimulado / totalReceita) * 100 : 0;
@@ -199,7 +202,7 @@ export default function DashboardPage() {
       return {
         nome: agf.nome,
         receita: totalReceita,
-        despesaTotal: totalDespesaLM,
+        despesaTotal,
         resultado,
         margemLucro,
         objetos: totalObjetos,
@@ -218,11 +221,16 @@ export default function DashboardPage() {
 
     const evolucaoResultado = mesList.map((mes) => {
       let resultadoMes = 0;
-      const anosParaEvolucao = anosSelecionados.length > 0 ? anosSelecionados : [anosDisponiveis[anosDisponiveis.length - 1] || new Date().getFullYear()];
+      const anosParaEvolucao = anosSelecionados.length > 0 ? anosSelecionados :
+        [anosDisponiveis[anosDisponiveis.length - 1] || new Date().getFullYear()];
       for (const ano of anosParaEvolucao) {
         for (const agf of agfsFiltradas) {
           const d = sourceDados?.[ano]?.[mes]?.[agf.nome];
-          if (d) resultadoMes += Number(d.receita ?? 0) - Number(d.despesa_total ?? 0);
+          if (d) {
+            const despesaMes = Number(d.despesa_total ?? 0) ||
+              Object.values(d.despesas ?? {}).reduce<number>((sum: number, v: any) => sum + Number(v ?? 0), 0);
+            resultadoMes += (Number(d.receita ?? 0) - despesaMes);
+          }
         }
       }
       return {
@@ -236,14 +244,17 @@ export default function DashboardPage() {
 
   const handleMultiSelect = (setter: Function, value: any) =>
     setter((prev: any[]) => prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]);
-  const currencyFormatter0 = (value: number) =>
-    Number(value ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
-  const currencyFormatter = (value: number) =>
-    Number(value ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+  const currencyFormatter = (value: number) => Number(value ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+  const currencyNoCents = (value: number) => `R$ ${Math.round(Number(value ?? 0)).toLocaleString("pt-BR")}`;
   const percentFormatter  = (value: number) => `${Number(value ?? 0).toFixed(1)}%`;
   const numberFormatter   = (value: number) => Number(value ?? 0).toLocaleString("pt-BR");
-  const compactNumberFormatter = (value: number) => Number(value ?? 0).toLocaleString("pt-BR", { notation: "compact", maximumFractionDigits: 1 });
-  const CORES = { receita: "#4AA8FF", despesa: "#E74C3C", resultado: "#48DB8A", objetos: "#F2C14E", margem: "#A974F8", simulacaoGanho: "#F4D35E" };
+  const compactNumberFormatter = (value: number) => Number(value ?? 0).toLocaleString("pt-BR", { notation: "compact" });
+
+  const CORES = {
+    receita: "#4AA8FF", despesa: "#E74C3C", resultado: "#48DB8A", objetos: "#F2C14E", margem: "#A974F8",
+    simulacaoReal: "#A974F8", simulacaoGanho: "#F4D35E"
+  };
 
   if (loading)
     return <div className="flex items-center justify-center h-screen bg-background-start text-white"><div className="p-6 text-lg">Carregando dados…</div></div>;
@@ -252,16 +263,27 @@ export default function DashboardPage() {
   if (!empresaId && !apiData)
     return <div className="flex items-center justify-center h-screen bg-background-start text-white"><div className="p-6 text-lg">ID da empresa não fornecido. Adicione `?empresa_id=...` à URL.</div></div>;
 
+  // Cabeçalhos da tabela de despesas (garante ordem estável e legível)
+  const headerCategorias = useMemo(() => {
+    const ordemPreferida = ["aluguel","comissoes","extras","honorarios","impostos","pitney","telefone","veiculos","folha_pagamento"];
+    const norm = (s: string) => s.replace(/_/g, " ");
+    const set = new Set(sourceCategorias);
+    const ordered = ordemPreferida.filter(c => set.has(c));
+    for (const c of sourceCategorias) if (!ordered.includes(c)) ordered.push(c);
+    return ordered.map(c => ({ key: c, label: norm(c) }));
+  }, [sourceCategorias]);
+
   return (
     <div className="p-4 md:p-8 bg-background-start text-text min-h-screen">
       <main className="max-w-7xl mx-auto flex flex-col gap-8">
+        {/* Filtros */}
         <header className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <MultiSelectFilter name="AGF" options={sourceAgfs} selected={agfsSelecionadas} onSelect={(id) => handleMultiSelect(setAgfsSelecionadas, id)} />
           <MultiSelectFilter name="Mês" options={mesList.map((m) => ({ id: m, nome: new Date(0, m - 1).toLocaleString("pt-BR", { month: "long" }) }))} selected={mesesSelecionados} onSelect={(id) => handleMultiSelect(setMesesSelecionados, id)} />
           <MultiSelectFilter name="Ano" options={anosDisponiveis.map((a) => ({ id: a, nome: a.toString() }))} selected={anosSelecionados} onSelect={(id) => handleMultiSelect(setAnosSelecionados, id)} />
         </header>
 
-        {/* KPIs */}
+        {/* Cards */}
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           <Card title="Resultado" value={currencyFormatter(dadosProcessados.totaisGerais.resultado)} borderColor={CORES.resultado} valueColor="text-success" />
           <Card title="Receita Total" value={currencyFormatter(dadosProcessados.totaisGerais.receita)} borderColor={CORES.receita} valueColor="text-info" />
@@ -295,7 +317,7 @@ export default function DashboardPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} /><YAxis hide />
               <Tooltip content={<CustomTooltip formatter={currencyFormatter} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
-              <Bar dataKey="receita" fill="#4AA8FF" name="Receita">
+              <Bar dataKey="receita" fill={CORES.receita} name="Receita">
                 <LabelList dataKey="receita" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} />
               </Bar>
             </BarChart>
@@ -305,7 +327,7 @@ export default function DashboardPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} /><YAxis hide />
               <Tooltip content={<CustomTooltip formatter={currencyFormatter} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
-              <Bar dataKey="despesaTotal" fill="#E74C3C" name="Despesa">
+              <Bar dataKey="despesaTotal" fill={CORES.despesa} name="Despesa">
                 <LabelList dataKey="despesaTotal" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} />
               </Bar>
             </BarChart>
@@ -315,12 +337,26 @@ export default function DashboardPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} /><YAxis hide />
               <Tooltip content={<CustomTooltip formatter={currencyFormatter} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
-              <Bar dataKey="resultado" fill="#48DB8A" name="Resultado">
+              <Bar dataKey="resultado" fill={CORES.resultado} name="Resultado">
                 <LabelList dataKey="resultado" position="top" formatter={(v: number) => compactNumberFormatter(Number(v ?? 0))} style={{ fill: "#E9F2FF", fontSize: 12 }} />
               </Bar>
             </BarChart>
           </ChartContainer>
-          <ChartContainer title="Folha de Pagamento" className="h-[280px]">
+          <ChartContainer title="Comparativo de Margem de Lucro (%)" className="h-[280px]">
+            <BarChart data={dadosProcessados.totaisPorAgf} margin={{ top: 20, right: 20, left: -20, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
+              <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} /><YAxis hide />
+              <Tooltip content={<CustomTooltip formatter={percentFormatter} />} cursor={{ fill: "rgba(255, 255, 255, 0.1)" }} />
+              <Bar dataKey="margemLucro" fill={CORES.margem} name="Margem">
+                <LabelList dataKey="margemLucro" position="top" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} />
+              </Bar>
+            </BarChart>
+          </ChartContainer>
+        </section>
+
+        {/* Folha e Veículos */}
+        <section className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          <ChartContainer title="Folha de Pagamento" className="h-[350px]">
             <BarChart data={dadosProcessados.totaisPorAgf} margin={{ top: 20, right: 20, left: -10, bottom: 5 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(233, 242, 255, 0.1)" />
               <XAxis dataKey="nome" tick={{ fill: "#E9F2FF", opacity: 0.7, fontSize: 12 }} />
@@ -331,11 +367,16 @@ export default function DashboardPage() {
               </Bar>
             </BarChart>
           </ChartContainer>
-          <ChartContainer title="Total Gasto em Veículos por AGF" className="h-[280px]">
+          <ChartContainer title="Total Gasto em Veículos por AGF" className="h-[350px]">
             <PieChart>
               <Tooltip formatter={currencyFormatter} />
               <Legend wrapperStyle={{ fontSize: "12px", opacity: 0.8 }} />
-              <Pie data={dadosProcessados.totaisPorAgf} dataKey="despesasDetalhadas.veiculos" nameKey="nome" cx="50%" cy="50%" outerRadius={100} labelLine={false}
+              <Pie
+                data={dadosProcessados.totaisPorAgf}
+                dataKey="despesasDetalhadas.veiculos"
+                nameKey="nome"
+                cx="50%" cy="50%" outerRadius={100}
+                labelLine={false}
                 label={({ cx, cy, midAngle, innerRadius, outerRadius, payload }) => {
                   const radius = innerRadius + (outerRadius - innerRadius) * 1.2;
                   const x = cx + radius * Math.cos(-midAngle * (Math.PI / 180));
@@ -344,81 +385,74 @@ export default function DashboardPage() {
                   return (<text x={x} y={y} fill="white" textAnchor={x > cx ? "start" : "end"} dominantBaseline="central" fontSize={12}>
                     {compactNumberFormatter(value)}
                   </text>);
-                }}>
-                {dadosProcessados.totaisPorAgf.map((_, i) => (
-                  <Cell key={i} fill={["#F2935C", "#BF6550", "#4472CA", "#48DB8A"][i % 4]} />
+                }}
+              >
+                {dadosProcessados.totaisPorAgf.map((_, index) => (
+                  <Cell key={`cell-${index}`} fill={["#F2935C", "#BF6550", "#4472CA", "#48DB8A"][index % 4]} />
                 ))}
               </Pie>
             </PieChart>
           </ChartContainer>
         </section>
 
-        {/* ======== TABELAS (agora antes da simulação) ======== */}
+        {/* TABELAS (agora logo após Folha/Veículos) */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* 1/3: Objetos tratados */}
+          {/* 1/3 – Objetos tratados */}
           <div className="bg-card p-4 rounded-lg lg:col-span-1">
             <h3 className="font-bold mb-4 text-text">Objetos tratados</h3>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="min-w-full text-sm">
                 <thead>
-                  <tr className="text-left text-text/70 border-b border-white/10">
-                    <th className="py-2 px-2">AGF</th>
-                    <th className="py-2 px-2 text-right">Quantidade</th>
+                  <tr className="text-left text-text/80 border-b border-primary/20">
+                    <th className="py-2 pr-4">AGF</th>
+                    <th className="py-2">Quantidade</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {dadosProcessados.totaisPorAgf.length === 0 ? (
-                    <tr><td className="py-3 px-2" colSpan={2}>Sem dados.</td></tr>
-                  ) : (
-                    dadosProcessados.totaisPorAgf.map((r) => (
-                      <tr key={r.nome} className="border-b border-white/5">
-                        <td className="py-2 px-2">{r.nome}</td>
-                        <td className="py-2 px-2 text-right text-primary font-semibold">{numberFormatter(r.objetos)}</td>
-                      </tr>
-                    ))
-                  )}
+                  {dadosProcessados.totaisPorAgf.map((row) => (
+                    <tr key={row.nome} className="border-b border-white/5">
+                      <td className="py-2 pr-4">{row.nome}</td>
+                      <td className="py-2 font-semibold text-indigo-300 text-[13px]">{numberFormatter(row.objetos)}</td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
           </div>
 
-          {/* 2/3: Despesas por categoria */}
+          {/* 2/3 – Despesas por categoria */}
           <div className="bg-card p-4 rounded-lg lg:col-span-2">
             <h3 className="font-bold mb-4 text-text">Despesas por categoria</h3>
             <div className="overflow-x-auto">
-              <table className="min-w-[780px] w-full text-sm">
+              <table className="min-w-full text-sm">
                 <thead>
-                  <tr className="text-left text-text/70 border-b border-white/10">
-                    <th className="py-2 px-2">AGF</th>
-                    {sourceCategorias.map((c: string) => (
-                      <th key={c} className="py-2 px-2 text-right capitalize">{c.replace(/_/g," ")}</th>
+                  <tr className="text-left text-text/80 border-b border-primary/20">
+                    <th className="py-2 pr-4">AGF</th>
+                    {headerCategorias.map((c) => (
+                      <th key={c.key} className="py-2 px-2 capitalize whitespace-nowrap">{c.label}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {dadosProcessados.totaisPorAgf.length === 0 ? (
-                    <tr><td className="py-3 px-2" colSpan={1 + sourceCategorias.length}>Sem dados.</td></tr>
-                  ) : (
-                    dadosProcessados.totaisPorAgf.map((r) => (
-                      <tr key={r.nome} className="border-b border-white/5">
-                        <td className="py-2 px-2">{r.nome}</td>
-                        {sourceCategorias.map((c: string) => (
-                          <td key={c} className="py-2 px-2 text-right">
-                            <span className="text-primary text-xs font-semibold">
-                              {currencyFormatter0(r.despesasDetalhadas[c] || 0)}
-                            </span>
-                          </td>
-                        ))}
-                      </tr>
-                    ))
-                  )}
+                  {dadosProcessados.totaisPorAgf.map((row) => (
+                    <tr key={row.nome} className="border-b border-white/5">
+                      <td className="py-2 pr-4">{row.nome}</td>
+                      {headerCategorias.map((c) => (
+                        <td key={c.key} className="py-2 px-2">
+                          <span className="font-semibold text-indigo-300 text-[13px]">
+                            {currencyNoCents(Number(row.despesasDetalhadas?.[c.key] ?? 0))}
+                          </span>
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
           </div>
         </section>
 
-        {/* ======== SIMULAÇÃO (agora POR ÚLTIMO) ======== */}
+        {/* Simulação – por último */}
         <section className="bg-card p-4 rounded-lg">
           <h3 className="font-bold mb-4 text-text">Simulação de Margem de Lucro</h3>
           <div className="mb-4">
@@ -451,7 +485,14 @@ export default function DashboardPage() {
                 <LabelList dataKey="margemLucroReal" position="center" formatter={(v: number) => `${Number(v ?? 0).toFixed(1)}%`} style={{ fill: "#E9F2FF", fontSize: 12 }} />
               </Bar>
               {categoriasExcluidas.length > 0 && (
-                <Bar dataKey="ganhoMargem" stackId="a" fill="#F4D35E" name="Ganho de Margem" />
+                <Bar dataKey="ganhoMargem" stackId="a" fill="#F4D35E" name="Ganho de Margem">
+                  <LabelList
+                    dataKey="ganhoMargem"
+                    position="center"
+                    formatter={(v: number) => (v > 0 ? `+${Number(v ?? 0).toFixed(1)}%` : "")}
+                    style={{ fill: "#010326", fontSize: 12, fontWeight: "bold" }}
+                  />
+                </Bar>
               )}
             </BarChart>
           </ChartContainer>
