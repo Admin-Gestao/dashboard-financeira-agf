@@ -63,8 +63,8 @@ function parseValorBR(v: any): number {
 }
 
 // normaliza categorias das SubContas para chaves fixas do front
-function normalizeCategoria(input: any): string {
-  const raw = String(input || '').trim();
+function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categoriaId?: string): string {
+  const raw = String(nomeCat || '').trim();
   const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
   const direct: Record<string,string> = {
@@ -73,12 +73,14 @@ function normalizeCategoria(input: any): string {
     'extras':'extras',
     'honorarios':'honorarios','honorário':'honorarios','honorario':'honorarios',
     'imposto':'impostos','impostos':'impostos',
-    'pitney':'pitney','telefone':'telefone',
+    'pitney':'pitney',
+    'telefone':'telefone','telefonia':'telefone',
     'veiculos':'veiculos','veículo':'veiculos','veiculo':'veiculos',
     'folha pgto':'folha_pagamento','folha pgto.':'folha_pagamento','folha pagamento':'folha_pagamento',
   };
   if (direct[s]) return direct[s];
 
+  // Heurísticas por nome
   if (s.includes('alug')) return 'aluguel';
   if (s.includes('comis')) return 'comissoes';
   if (s.includes('honor')) return 'honorarios';
@@ -88,6 +90,18 @@ function normalizeCategoria(input: any): string {
   if (s.includes('impost') || s === 'pis' || s === 'cofins' || s === 'irrf' || s.includes('iss')) return 'impostos';
   if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
   if (s.includes('extra')) return 'extras';
+
+  // Se o nome da categoria veio vazio/inesperado, tenta pela descrição
+  const d = (descricao || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  if (/(pis|cofins|irrf|iss)/.test(d)) return 'impostos';
+  if (/(uber|post[oa]|estaciona|motoboy|pedag|sem parar|km|combust)/.test(d)) return 'veiculos';
+  if (/(vivo|claro|america\s*net|telefonica|tim|oi|celular|fixo)/.test(d)) return 'telefone';
+  if (/(pitney|loca[çc][aã]o|manuten|tinta|material|servic)/.test(d)) return 'pitney';
+  if (/(dr|doutor|m[ée]dico|advog|contab)/.test(d)) return 'honorarios';
+  if (/(omega|unifisa|ewd|emilio|ghisso|comiss)/.test(d)) return 'comissoes';
+  if (/(aluguel|shopping)/.test(d)) return 'aluguel';
+
+  // fallback
   return 'extras';
 }
 
@@ -121,7 +135,7 @@ export async function GET(req: Request) {
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // 2) Lançamentos Mensais (FONTE OFICIAL para receita/despesa/resultado)
+    // 2) Lançamentos Mensais (fonte oficial)
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
     const lmRes = await bubbleGet<{
       _id: string;
@@ -144,14 +158,16 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) Categorias (id -> nome)
-    const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string }>(
+    // 3) Categorias (id -> nome) — pega o máximo possível
+    const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string; Descrição?: string; descricao?: string }>(
       `/api/1.1/obj/${enc('Categoria Despesa')}?limit=2000`
     );
     const catIdToNome = new Map<string, string>(
       catRes.response.results.map(c => {
-        const nome = (c as any).Categoria || (c as any).Nome || (c as any).name || '';
-        return [c._id, nome] as const;
+        const nome =
+          (c as any).Categoria || (c as any).Nome || (c as any).name || (c as any).nome ||
+          (c as any).Descrição || (c as any).descricao || '';
+        return [c._id, String(nome)] as const;
       })
     );
 
@@ -165,7 +181,28 @@ export async function GET(req: Request) {
       'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
       Categoria?: any;
       Valor: number | string;
+      Descrição?: string;
+      descricao?: string;
     }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scCons}`);
+
+    // (4b) Se aparecerem IDs de categoria que não vieram na listagem, busca 1-a-1
+    const missingCatIds = Array.from(new Set(
+      scRes.response.results
+        .map(sc => (typeof (sc as any).Categoria === 'string' ? (sc as any).Categoria : null))
+        .filter((id): id is string => !!id && !catIdToNome.has(id))
+    ));
+    for (const cid of missingCatIds) {
+      try {
+        const single = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string }>(
+          `/api/1.1/obj/${enc('Categoria Despesa')}/${enc(cid)}`
+        );
+        const item = single.response.results?.[0] as any;
+        const nome = item?.Categoria || item?.Nome || item?.name || item?.nome || '';
+        if (nome) catIdToNome.set(cid, String(nome));
+      } catch {
+        /* ignora falha individual */
+      }
+    }
 
     // 5) Balancete (objetos) – somente "Total"
     const balCons = constraints([
@@ -186,9 +223,9 @@ export async function GET(req: Request) {
     const dados: Record<number, Record<number, Record<string, {
       receita: number;              // total_receita LM
       objetos: number;             // balancete
-      despesa_total: number;       // total_despesa LM (FONTE DA VERDADE)
+      despesa_total: number;       // total_despesa LM
       despesas: Record<string, number>; // soma das SubContas por categoria
-      despesa_subcontas_total?: number; // soma total das SubContas (apenas informativo)
+      despesa_subcontas_total?: number; // informativo
     }>>> = {};
 
     const ensure = (ano: number, mes: number, agfNome: string) => {
@@ -238,7 +275,7 @@ export async function GET(req: Request) {
       entry.objetos += parseValorBR((b as any).Quantidade);
     }
 
-    // 5.3) Despesas por categoria (SubContas) – não alteram o total oficial
+    // 5.3) Despesas por categoria (SubContas)
     for (const sc of scRes.response.results) {
       const lmField =
         (sc as any)['LançamentoMesnal'] ??
@@ -273,21 +310,23 @@ export async function GET(req: Request) {
       const entry = ensure(ano, mes, agfNome);
 
       // Categoria pode ser ID, texto ou objeto
-      const catRaw = (() => {
-        const c = (sc as any).Categoria;
-        if (!c) return '';
-        if (typeof c === 'string') return catIdToNome.get(c) || c;
-        if (typeof c === 'object') return (c as any).Categoria || (c as any).Nome || (c as any).name || '';
-        return '';
-      })();
-      const categoria = normalizeCategoria(catRaw);
+      let nomeCategoria = '';
+      const c = (sc as any).Categoria;
+      if (c) {
+        if (typeof c === 'string') nomeCategoria = catIdToNome.get(c) || '';
+        else if (typeof c === 'object') {
+          nomeCategoria = (c as any).Categoria || (c as any).Nome || (c as any).name || '';
+        }
+      }
+      const descricao = (sc as any).Descrição ?? (sc as any).descricao ?? '';
+      const categoria = normalizeCategoriaFromMeta(nomeCategoria, descricao, typeof c === 'string' ? c : undefined);
       const valor = parseValorBR((sc as any).Valor);
 
       entry.despesas[categoria] = (entry.despesas[categoria] || 0) + valor;
       entry.despesa_subcontas_total = (entry.despesa_subcontas_total || 0) + valor;
     }
 
-    // 5.4) Normalizações finais: NÃO sobrescrevemos o total oficial do LM
+    // 5.4) Normalizações finais
     for (const anoStr of Object.keys(dados)) {
       const ano = Number(anoStr);
       for (const mesStr of Object.keys(dados[ano])) {
