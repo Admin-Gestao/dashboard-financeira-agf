@@ -98,57 +98,38 @@ const CAT_ID_TO_KEY: Record<string, string> = {
   "1755695521004x217825384616417760": "folha_pagamento",
 };
 
-function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categoriaId?: string): string {
-  if (categoriaId && CAT_ID_TO_KEY[categoriaId]) return CAT_ID_TO_KEY[categoriaId];
+/* =========================
+   BUBBLE FETCH COM FALLBACK
+   ========================= */
+type BubbleResponse<T=any> = { response: { results?: T[]; count?: number } & Record<string, any> };
 
-  const raw = String(nomeCat || '').trim();
-  const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-
-  const direct: Record<string,string> = {
-    'aluguel':'aluguel',
-    'comissoes':'comissoes','comissão':'comissoes','comissao':'comissoes',
-    'extras':'extras',
-    'honorarios':'honorarios','honorário':'honorarios','honorario':'honorarios',
-    'imposto':'impostos','impostos':'impostos',
-    'pitney':'pitney',
-    'telefone':'telefone','telefonia':'telefone',
-    'veiculos':'veiculos','veículo':'veiculos','veiculo':'veiculos',
-    'folha pgto':'folha_pagamento','folha pgto.':'folha_pagamento','folha pagamento':'folha_pagamento',
-  };
-  if (direct[s]) return direct[s];
-
-  if (s.includes('alug')) return 'aluguel';
-  if (s.includes('comis')) return 'comissoes';
-  if (s.includes('honor')) return 'honorarios';
-  if (s.includes('pitney')) return 'pitney';
-  if (s.includes('telef')) return 'telefone';
-  if (s.includes('veic')) return 'veiculos';
-  if (s.includes('impost') || s === 'pis' || s === 'cofins' || s === 'irrf' || s.includes('iss')) return 'impostos';
-  if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
-  if (s.includes('extra')) return 'extras';
-
-  const d = (descricao || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
-  if (/(pis|cofins|irrf|iss)/.test(d)) return 'impostos';
-  if (/(uber|post[oa]|estaciona|motoboy|pedag|sem parar|km|combust)/.test(d)) return 'veiculos';
-  if (/(vivo|claro|america\s*net|telefonica|tim|oi|celular|fixo)/.test(d)) return 'telefone';
-  if (/(pitney)/.test(d)) return 'pitney';
-  if (/(dr|doutor|m[ée]dico|advog|contab)/.test(d)) return 'honorarios';
-  if (/(comiss)/.test(d)) return 'comissoes';
-  if (/(aluguel|shopping)/.test(d)) return 'aluguel';
-
-  return 'extras';
+async function bubbleGetFirst<T=any>(paths: string[]): Promise<BubbleResponse<T>> {
+  let lastError: any = null;
+  for (const p of paths) {
+    try {
+      const res = await fetch(`${BASE}${p}`, {
+        headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' },
+        cache: 'no-store',
+      });
+      if (!res.ok) {
+        lastError = new Error(`HTTP ${res.status} on ${p}`);
+        continue;
+      }
+      const json = await res.json();
+      return json as BubbleResponse<T>;
+    } catch (e) {
+      lastError = e;
+      continue;
+    }
+  }
+  throw lastError ?? new Error('Falha ao consultar Bubble');
 }
 
-async function bubbleGet<T>(path: string) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' },
-    cache: 'no-store',
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Bubble GET ${path} -> ${res.status} ${body}`);
-  }
-  return (await res.json()) as { response: { results?: T[]; count?: number } & Record<string, any> };
+function objPathsPlural(objectCandidates: string[], query: string) {
+  return objectCandidates.map(o => `/api/1.1/obj/${enc(o)}${query}`);
+}
+function objPathSingle(objectCandidates: string[], id: string) {
+  return objectCandidates.map(o => `/api/1.1/obj/${enc(o)}/${enc(id)}`);
 }
 
 export async function GET(req: Request) {
@@ -157,10 +138,19 @@ export async function GET(req: Request) {
     const empresaId = searchParams.get('empresa_id');
     if (!empresaId) return NextResponse.json({ error: 'empresa_id ausente' }, { status: 400 });
 
+    // Candidatos de nome para cada objeto (tenta todos nessa ordem)
+    const OBJ = {
+      agf: ['agf','AGF'],
+      lm: ['lançamentomensal','LançamentoMensal','lan%C3%A7amentomensal'], // redundante por segurança
+      categoria: ['categoriadespesa','Categoria Despesa'],
+      subconta: ['despesa(subconta)','Despesa (SubConta)'],
+      balancete: ['balancete','Balancete'],
+    };
+
     // === 1) AGFs da empresa ===
     const agfCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
-    const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
-      `/api/1.1/obj/${enc('agf')}?limit=200&constraints=${agfCons}`
+    const agfsRes = await bubbleGetFirst<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
+      objPathsPlural(OBJ.agf, `?limit=200&constraints=${agfCons}`)
     );
     const agfs = (agfsRes.response.results || []).map(a => ({
       id: a._id,
@@ -169,18 +159,19 @@ export async function GET(req: Request) {
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
+    // Se não houver AGF, devolve estrutura vazia (evita 500 por IN [])
+    if (agfIds.length === 0) {
+      return NextResponse.json({ agfs: [], categoriasDespesa: [
+        'aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'
+      ], dados: {} });
+    }
+
     // === 2) Lançamentos Mensais da empresa ===
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
-    const lmRes = await bubbleGet<{
-      _id: string;
-      Ano: any;
-      Mês: any;
-      AGF: string | { _id: string };
-      total_receita?: number;
-      total_despesa?: number;
-      resultado_final?: number;
-      Data?: string;
-    }>(`/api/1.1/obj/${enc('lançamentomensal')}?limit=1000&constraints=${lmCons}`);
+    const lmRes = await bubbleGetFirst<{
+      _id: string; Ano: any; Mês: any; AGF: string | { _id: string };
+      total_receita?: number; total_despesa?: number; resultado_final?: number; Data?: string;
+    }>(objPathsPlural(OBJ.lm, `?limit=1000&constraints=${lmCons}`));
 
     const lmIndex = new Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>();
     for (const lm of (lmRes.response.results || [])) {
@@ -193,8 +184,8 @@ export async function GET(req: Request) {
     const lmIds = Array.from(lmIndex.keys());
 
     // === 3) Categorias (id -> nome) ===
-    const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string; Descrição?: string; descricao?: string }>(
-      `/api/1.1/obj/${enc('categoriadespesa')}?limit=2000`
+    const catRes = await bubbleGetFirst<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string; Descrição?: string; descricao?: string }>(
+      objPathsPlural(OBJ.categoria, `?limit=2000`)
     );
     const catIdToNome = new Map<string, string>(
       (catRes.response.results || []).map(c => {
@@ -205,26 +196,28 @@ export async function GET(req: Request) {
       })
     );
 
-    // === 4) SubContas (duas buscas e merge) ===
+    // === 4) SubContas (busca por AGF e por LM; evita IN [] quando não houver LM) ===
+    const scParts: any[] = [];
+
+    // por AGF
     const subByAgfCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
-    const subByLmCons  = constraints([{ key: 'LançamentoMesnal', constraint_type: 'in', value: lmIds }]);
-    const subByLmCons2 = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]); // variação
+    const scAgf = await bubbleGetFirst<any>(objPathsPlural(OBJ.subconta, `?limit=5000&constraints=${subByAgfCons}`));
+    scParts.push(...(scAgf.response.results || []));
 
-    const [scAgf, scLm1, scLm2] = await Promise.all([
-      bubbleGet<any>(`/api/1.1/obj/${enc('despesa(subconta)')}?limit=5000&constraints=${subByAgfCons}`),
-      bubbleGet<any>(`/api/1.1/obj/${enc('despesa(subconta)')}?limit=5000&constraints=${subByLmCons}`),
-      bubbleGet<any>(`/api/1.1/obj/${enc('despesa(subconta)')}?limit=5000&constraints=${subByLmCons2}`),
-    ]);
+    // por LM, só se houver LM
+    if (lmIds.length > 0) {
+      const subByLmCons  = constraints([{ key: 'LançamentoMesnal', constraint_type: 'in', value: lmIds }]);
+      const subByLmCons2 = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
+      const [scLm1, scLm2] = await Promise.all([
+        bubbleGetFirst<any>(objPathsPlural(OBJ.subconta, `?limit=5000&constraints=${subByLmCons}`)),
+        bubbleGetFirst<any>(objPathsPlural(OBJ.subconta, `?limit=5000&constraints=${subByLmCons2}`)),
+      ]);
+      scParts.push(...(scLm1.response.results || []), ...(scLm2.response.results || []));
+    }
 
-    const subAllRaw = [
-      ...(scAgf.response.results || []),
-      ...(scLm1.response.results || []),
-      ...(scLm2.response.results || []),
-    ];
-
-    // Remove duplicados por _id
+    // merge únicos por _id
     const scMap = new Map<string, any>();
-    for (const it of subAllRaw) scMap.set(it._id, it);
+    for (const it of scParts) scMap.set(it._id, it);
     const subAll = Array.from(scMap.values());
 
     // (4b) Trazer nomes de categorias faltantes
@@ -235,25 +228,24 @@ export async function GET(req: Request) {
     ));
     for (const cid of missingCatIds) {
       try {
-        const single = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string }>(
-          `/api/1.1/obj/${enc('categoriadespesa')}/${enc(cid)}`
-        );
-        const item = (single.response as any).results?.[0] || (single.response as any); // Bubble pode retornar objeto direto
+        const single = await bubbleGetFirst<any>(objPathSingle(OBJ.categoria, cid));
+        // Bubble pode retornar {response: {...}} direto ou com results
+        const item = (single.response as any).results?.[0] || (single.response as any);
         const nome = item?.Categoria || item?.Nome || item?.name || item?.nome || '';
         if (nome) catIdToNome.set(cid, String(nome));
       } catch { /* ignora */ }
     }
 
     // === 5) Balancete (objetos - Total) ===
-    const balCons = constraints([
-      { key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds },
-      { key: 'Tipo de objeto',    constraint_type: 'equals', value: 'Total' },
-    ]);
-    const balRes = await bubbleGet<{
-      _id: string;
-      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
-      Quantidade?: number | string;
-    }>(`/api/1.1/obj/${enc('balancete')}?limit=2000&constraints=${balCons}`);
+    let balResults: any[] = [];
+    if (lmIds.length > 0) {
+      const balCons = constraints([
+        { key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds },
+        { key: 'Tipo de objeto',    constraint_type: 'equals', value: 'Total' },
+      ]);
+      const balRes = await bubbleGetFirst<any>(objPathsPlural(OBJ.balancete, `?limit=2000&constraints=${balCons}`));
+      balResults = balRes.response.results || [];
+    }
 
     // -------- AGREGAÇÃO --------
     const categoriasDespesa = [
@@ -295,7 +287,7 @@ export async function GET(req: Request) {
     }
 
     // 5.2) Objetos
-    for (const b of (balRes.response.results || [])) {
+    for (const b of balResults) {
       const lmField = (b as any)['Lançamento Mensal'];
       let ano = 0, mes = 0, agfNome = 'AGF';
 
@@ -315,7 +307,7 @@ export async function GET(req: Request) {
       entry.objetos += parseValorBR((b as any).Quantidade);
     }
 
-    // 5.3) Despesas por categoria (SubContas) — SOMA de todas as linhas
+    // 5.3) Despesas por categoria (SubContas) — soma todas as linhas
     for (const sc of subAll) {
       const lmField =
         (sc as any)['LançamentoMesnal'] ??
@@ -365,7 +357,7 @@ export async function GET(req: Request) {
       entry.despesa_subcontas_total = (entry.despesa_subcontas_total || 0) + valor;
     }
 
-    // 5.4) Normalizações
+    // 5.4) Normalizações finais
     for (const anoStr of Object.keys(dados)) {
       const ano = Number(anoStr);
       for (const mesStr of Object.keys(dados[ano])) {
