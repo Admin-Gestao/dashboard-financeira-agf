@@ -6,6 +6,14 @@ const KEY  = process.env.BUBBLE_API_KEY!;
 function enc(s: string) { return encodeURIComponent(s); }
 function constraints(obj: any) { return encodeURIComponent(JSON.stringify(obj)); }
 
+// --- NOVO: normaliza nome de AGF para usar como chave consistente ---
+function normAgfName(s: string) {
+  return String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'') // sem acentos (só por segurança)
+    .replace(/\s+/g,' ') // colapsa múltiplos espaços
+    .trim();
+}
+
 const MESES: Record<string, number> = {
   '1':1,'01':1,'jan':1,'janeiro':1,
   '2':2,'02':2,'fev':2,'fevereiro':2,
@@ -169,10 +177,10 @@ export async function GET(req: Request) {
     const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
       `/api/1.1/obj/${enc('AGF')}?limit=200&constraints=${agfCons}`
     );
-    const agfs = agfsRes.response.results.map(a => ({
-      id: a._id,
-      nome: (a as any)['Nome da AGF'] || (a as any).nome || (a as any).name || a._id,
-    }));
+    const agfs = agfsRes.response.results.map(a => {
+      const nomeRaw = (a as any)['Nome da AGF'] || (a as any).nome || (a as any).name || a._id;
+      return { id: a._id, nome: normAgfName(nomeRaw) };
+    });
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
@@ -194,7 +202,7 @@ export async function GET(req: Request) {
       const ano = parseAno((lm as any).Ano) || parseAno((lm as any).Data?.split('/')[1]);
       const mes = parseMes((lm as any).Mês) || Number((lm as any).Data?.split('/')[0]);
       const agfId = typeof lm.AGF === 'string' ? lm.AGF : (lm.AGF as any)?._id;
-      const agfNome = agfIdToNome.get(agfId || '') || agfId || 'AGF';
+      const agfNome = normAgfName(agfIdToNome.get(agfId || '') || agfId || 'AGF');
       if (lm._id) lmIndex.set(lm._id, { ano, mes, agfId, agfNome });
     }
     const lmIds = Array.from(lmIndex.keys());
@@ -243,9 +251,7 @@ export async function GET(req: Request) {
       } catch { /* ignora */ }
     }
 
-    // (4c) *** NOVO ***: alguns registros de SubContas referenciam um Lançamento Mensal por ID
-    // que não veio na primeira busca (por exemplo, se o LM não possui "Empresa Mãe" ou está fora do limite).
-    // Aqui buscamos esses LMs faltantes 1-a-1 e populamos o lmIndex, garantindo que nada fique de fora.
+    // (4c) Completa LMs que não vieram na busca principal
     const scLmIds = Array.from(new Set(
       scRes.response.results.map(sc => {
         const lmField =
@@ -266,13 +272,11 @@ export async function GET(req: Request) {
         const ano = parseAno(lm.Ano) || parseAno(lm?.Data?.split?.('/')?.[1]);
         const mes = parseMes(lm.Mês) || Number(lm?.Data?.split?.('/')?.[0]);
         const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
-        const agfNome = agfIdToNome.get(agfId || '') || agfId || 'AGF';
+        const agfNome = normAgfName(agfIdToNome.get(agfId || '') || agfId || 'AGF');
         if (ano && mes) {
           lmIndex.set(id, { ano, mes, agfId, agfNome });
         }
-      } catch {
-        // Se falhar, seguimos — haverá outros fallbacks (ex.: parseMesAnoStr) mais abaixo
-      }
+      } catch { /* segue */ }
     }
 
     // 5) Balancete (objetos) – somente "Total"
@@ -300,17 +304,18 @@ export async function GET(req: Request) {
     }>>> = {};
 
     const ensure = (ano: number, mes: number, agfNome: string) => {
+      const key = normAgfName(agfNome); // --- NOVO: garante nome normalizado como chave ---
       if (!dados[ano]) dados[ano] = {};
       if (!dados[ano][mes]) dados[ano][mes] = {};
-      if (!dados[ano][mes][agfNome]) {
-        dados[ano][mes][agfNome] = {
+      if (!dados[ano][mes][key]) {
+        dados[ano][mes][key] = {
           receita: 0,
           objetos: 0,
           despesa_total: 0,
           despesas: Object.fromEntries(categoriasDespesa.map(c => [c, 0]))
         };
       }
-      return dados[ano][mes][agfNome];
+      return dados[ano][mes][key];
     };
 
     // 5.1) LM -> receita e despesa (oficiais)
@@ -338,7 +343,7 @@ export async function GET(req: Request) {
         ano = parseAno((lmField as any).Ano);
         mes = parseMes((lmField as any).Mês);
         const aid = typeof (lmField as any).AGF === 'string' ? (lmField as any).AGF : (lmField as any).AGF?._id;
-        agfNome = agfIdToNome.get(aid || '') || agfNome;
+        agfNome = normAgfName(agfIdToNome.get(aid || '') || agfNome);
       }
       if (!ano || !mes) continue;
 
@@ -367,14 +372,14 @@ export async function GET(req: Request) {
         ano = parseAno((lmField as any).Ano);
         mes = parseMes((lmField as any).Mês);
         const aid = typeof (lmField as any).AGF === 'string' ? (lmField as any).AGF : (lmField as any).AGF?._id;
-        agfNome = agfIdToNome.get(aid || '') || agfNome;
+        agfNome = normAgfName(agfIdToNome.get(aid || '') || agfNome);
       }
 
-      // se vier AGF direto na SubConta, sobrescreve
+      // se vier AGF direto na SubConta, sobrescreve (normalizado)
       if ((sc as any).AGF) {
         const agfField = (sc as any).AGF;
         const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
-        agfNome = agfIdToNome.get(agfId || '') || agfNome;
+        agfNome = normAgfName(agfIdToNome.get(agfId || '') || agfNome);
       }
       if (!ano || !mes) continue;
 
@@ -390,7 +395,13 @@ export async function GET(req: Request) {
         }
       }
       const descricao = (sc as any).Descrição ?? (sc as any).descricao ?? '';
-      const categoria = normalizeCategoriaFromMeta(nomeCategoria, descricao, typeof c === 'string' ? c : undefined);
+      let categoria = normalizeCategoriaFromMeta(nomeCategoria, descricao, typeof c === 'string' ? c : undefined);
+
+      // --- NOVO: garante que a chave exista entre as conhecidas ---
+      if (!(['aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'] as const).includes(categoria as any)) {
+        categoria = 'extras';
+      }
+
       const valor = parseValorBR((sc as any).Valor);
 
       entry.despesas[categoria] = (entry.despesas[categoria] || 0) + valor;
