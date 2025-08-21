@@ -158,7 +158,7 @@ async function bubbleGet<T>(path: string) {
   return (await res.json()) as { response: { results: T[]; count?: number } };
 }
 
-/** NOVO: GET de um único objeto por ID (Bubble retorna {response: { ...obj }}) */
+/** GET de um único objeto por ID (Bubble retorna {response: { ...obj }}) */
 async function bubbleGetSingle<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' },
@@ -169,7 +169,6 @@ async function bubbleGetSingle<T>(path: string): Promise<T> {
     throw new Error(`Bubble GET ${path} -> ${res.status} ${body}`);
   }
   const json = await res.json();
-  // garante shape consistente
   return (json?.response ?? json) as T;
 }
 
@@ -214,7 +213,7 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) Categorias (id -> nome) — pega o máximo possível
+    // 3) Categorias (id -> nome)
     const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string; Descrição?: string; descricao?: string }>(
       `/api/1.1/obj/${enc('Categoria Despesa')}?limit=2000`
     );
@@ -227,23 +226,37 @@ export async function GET(req: Request) {
       })
     );
 
-    // 4) SubContas (detalhe das despesas por categoria)
-    const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
-    const scRes = await bubbleGet<{
-      _id: string;
-      AGF: string | { _id: string };
-      'LançamentoMesnal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
-      'LançamentoMensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
-      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
-      Categoria?: any;
-      Valor: number | string;
-      Descrição?: string;
-      descricao?: string;
-    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scCons}`);
+    // 4) SubContas — unifica duas fontes para não perder linhas
+    const scConsByAgf = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
+    const scByAgf = await bubbleGet<any>(
+      `/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scConsByAgf}`
+    );
 
-    // (4b) IDs de categoria que não vieram na listagem — busca 1-a-1 (forma correta p/ single)
+    // (4b) também por LançamentoMensal/LançamentoMesnal/Lançamento Mensal IN lmIds
+    const scConsByLM1 = constraints([{ key: 'LançamentoMesnal', constraint_type: 'in', value: lmIds }]);
+    const scConsByLM2 = constraints([{ key: 'LançamentoMensal', constraint_type: 'in', value: lmIds }]);
+    const scConsByLM3 = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
+    const [scByLM1, scByLM2, scByLM3] = await Promise.all([
+      bubbleGet<any>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scConsByLM1}`),
+      bubbleGet<any>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scConsByLM2}`),
+      bubbleGet<any>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scConsByLM3}`),
+    ]);
+
+    // junta e remove duplicados por _id
+    const scAllMap = new Map<string, any>();
+    for (const r of [
+      ...scByAgf.response.results,
+      ...scByLM1.response.results,
+      ...scByLM2.response.results,
+      ...scByLM3.response.results,
+    ]) {
+      if (r && r._id && !scAllMap.has(r._id)) scAllMap.set(r._id, r);
+    }
+    const scAll = Array.from(scAllMap.values());
+
+    // (4c) IDs de categoria faltantes — busca 1-a-1 (single)
     const missingCatIds = Array.from(new Set(
-      scRes.response.results
+      scAll
         .map(sc => (typeof (sc as any).Categoria === 'string' ? (sc as any).Categoria : null))
         .filter((id): id is string => !!id && !catIdToNome.has(id))
     ));
@@ -326,8 +339,8 @@ export async function GET(req: Request) {
       entry.objetos += parseValorBR((b as any).Quantidade);
     }
 
-    // 5.3) Despesas por categoria (SubContas) — com fallback de LM por ID
-    for (const sc of scRes.response.results) {
+    // 5.3) Despesas por categoria (SubContas) — usando scAll (AGF + LM)
+    for (const sc of scAll) {
       const lmField =
         (sc as any)['LançamentoMesnal'] ??
         (sc as any)['LançamentoMensal'] ??
@@ -339,7 +352,7 @@ export async function GET(req: Request) {
       if (typeof lmField === 'string') {
         let meta = lmIndex.get(lmField);
 
-        // >>> NOVO: se não estiver no índice, busca LM por ID (forma correta p/ single)
+        // fallback: buscar LM por ID se não estava no índice
         if (!meta && lmField) {
           try {
             const lmSingle = await bubbleGetSingle<any>(`/api/1.1/obj/${enc('LançamentoMensal')}/${enc(lmField)}`);
@@ -349,9 +362,9 @@ export async function GET(req: Request) {
             const agfNomeS = agfIdToNome.get(agfIdS || '') || agfIdS || 'AGF';
             if (anoS && mesS) {
               meta = { ano: anoS, mes: mesS, agfId: agfIdS, agfNome: agfNomeS };
-              lmIndex.set(lmField, meta); // cache para as próximas linhas
+              lmIndex.set(lmField, meta);
             }
-          } catch { /* ignora, segue com as outras heurísticas */ }
+          } catch { /* ignora */ }
         }
 
         if (meta) {
