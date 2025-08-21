@@ -98,6 +98,54 @@ const CAT_ID_TO_KEY: Record<string, string> = {
   "1755695521004x217825384616417760": "folha_pagamento",
 };
 
+/** Normaliza categorias das SubContas para as chaves fixas do front */
+function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categoriaId?: string): string {
+  // 1) Prioriza o ID de categoria quando disponível
+  if (categoriaId && CAT_ID_TO_KEY[categoriaId]) {
+    return CAT_ID_TO_KEY[categoriaId];
+  }
+
+  const raw = String(nomeCat || '').trim();
+  const s = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+
+  const direct: Record<string,string> = {
+    'aluguel':'aluguel',
+    'comissoes':'comissoes','comissão':'comissoes','comissao':'comissoes',
+    'extras':'extras',
+    'honorarios':'honorarios','honorário':'honorarios','honorario':'honorarios',
+    'imposto':'impostos','impostos':'impostos',
+    'pitney':'pitney',
+    'telefone':'telefone','telefonia':'telefone',
+    'veiculos':'veiculos','veículo':'veiculos','veiculo':'veiculos',
+    'folha pgto':'folha_pagamento','folha pgto.':'folha_pagamento','folha pagamento':'folha_pagamento',
+  };
+  if (direct[s]) return direct[s];
+
+  // Heurísticas por nome
+  if (s.includes('alug')) return 'aluguel';
+  if (s.includes('comis')) return 'comissoes';
+  if (s.includes('honor')) return 'honorarios';
+  if (s.includes('pitney')) return 'pitney';
+  if (s.includes('telef')) return 'telefone';
+  if (s.includes('veic')) return 'veiculos';
+  if (s.includes('impost') || s === 'pis' || s === 'cofins' || s === 'irrf' || s.includes('iss')) return 'impostos';
+  if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
+  if (s.includes('extra')) return 'extras';
+
+  // Se o nome da categoria veio vazio/inesperado, tenta pela descrição
+  const d = (descricao || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+  if (/(pis|cofins|irrf|iss)/.test(d)) return 'impostos';
+  if (/(uber|post[oa]|estaciona|motoboy|pedag|sem parar|km|combust)/.test(d)) return 'veiculos';
+  if (/(vivo|claro|america\s*net|telefonica|tim|oi|celular|fixo)/.test(d)) return 'telefone';
+  if (/(pitney|loca[çc][aã]o|manuten|tinta|material|servic)/.test(d)) return 'pitney';
+  if (/(dr|doutor|m[ée]dico|advog|contab)/.test(d)) return 'honorarios';
+  if (/(omega|unifisa|ewd|emilio|ghisso|comiss)/.test(d)) return 'comissoes';
+  if (/(aluguel|shopping)/.test(d)) return 'aluguel';
+
+  // fallback
+  return 'extras';
+}
+
 /* =========================
    BUBBLE FETCH COM FALLBACK
    ========================= */
@@ -141,7 +189,7 @@ export async function GET(req: Request) {
     // Candidatos de nome para cada objeto (tenta todos nessa ordem)
     const OBJ = {
       agf: ['agf','AGF'],
-      lm: ['lançamentomensal','LançamentoMensal','lan%C3%A7amentomensal'], // redundante por segurança
+      lm: ['lançamentomensal','LançamentoMensal','lan%C3%A7amentomensal'],
       categoria: ['categoriadespesa','Categoria Despesa'],
       subconta: ['despesa(subconta)','Despesa (SubConta)'],
       balancete: ['balancete','Balancete'],
@@ -229,7 +277,6 @@ export async function GET(req: Request) {
     for (const cid of missingCatIds) {
       try {
         const single = await bubbleGetFirst<any>(objPathSingle(OBJ.categoria, cid));
-        // Bubble pode retornar {response: {...}} direto ou com results
         const item = (single.response as any).results?.[0] || (single.response as any);
         const nome = item?.Categoria || item?.Nome || item?.name || item?.nome || '';
         if (nome) catIdToNome.set(cid, String(nome));
