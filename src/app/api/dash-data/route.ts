@@ -62,9 +62,9 @@ function parseValorBR(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Mapa de ID de Categoria (Bubble) -> chave canônica da tabela */
+/** Mapa de ID de Categoria (Bubble) -> chave canônica do front */
 const CAT_ID_TO_KEY: Record<string, string> = {
-  // AGF 1751032012715x423593633964884000
+  // AGF 1751032012715x423593633964884000 (Campo Limpo)
   "1754514204139x526063856276349100": "folha_pagamento",
   "1751034502993x140272905276620800": "veiculos",
   "1751034541896x868439199319326700": "telefone",
@@ -100,7 +100,7 @@ const CAT_ID_TO_KEY: Record<string, string> = {
 
 // normaliza categorias das SubContas para chaves fixas do front
 function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categoriaId?: string): string {
-  // Prioriza o ID de categoria quando disponível
+  // 1) Prioriza o ID de categoria quando disponível
   if (categoriaId && CAT_ID_TO_KEY[categoriaId]) {
     return CAT_ID_TO_KEY[categoriaId];
   }
@@ -132,7 +132,7 @@ function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categori
   if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
   if (s.includes('extra')) return 'extras';
 
-  // Heurísticas pela descrição (quando nome vier inesperado)
+  // Heurísticas pela descrição
   const d = (descricao || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   if (/(pis|cofins|irrf|iss)/.test(d)) return 'impostos';
   if (/(uber|post[oa]|estaciona|motoboy|pedag|sem parar|km|combust)/.test(d)) return 'veiculos';
@@ -156,6 +156,21 @@ async function bubbleGet<T>(path: string) {
     throw new Error(`Bubble GET ${path} -> ${res.status} ${body}`);
   }
   return (await res.json()) as { response: { results: T[]; count?: number } };
+}
+
+/** NOVO: GET de um único objeto por ID (Bubble retorna {response: { ...obj }}) */
+async function bubbleGetSingle<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Bubble GET ${path} -> ${res.status} ${body}`);
+  }
+  const json = await res.json();
+  // garante shape consistente
+  return (json?.response ?? json) as T;
 }
 
 export async function GET(req: Request) {
@@ -199,7 +214,7 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) Categorias (id -> nome)
+    // 3) Categorias (id -> nome) — pega o máximo possível
     const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string; Descrição?: string; descricao?: string }>(
       `/api/1.1/obj/${enc('Categoria Despesa')}?limit=2000`
     );
@@ -226,7 +241,7 @@ export async function GET(req: Request) {
       descricao?: string;
     }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scCons}`);
 
-    // (4b) Buscar categorias faltantes por ID (casos raros)
+    // (4b) IDs de categoria que não vieram na listagem — busca 1-a-1 (forma correta p/ single)
     const missingCatIds = Array.from(new Set(
       scRes.response.results
         .map(sc => (typeof (sc as any).Categoria === 'string' ? (sc as any).Categoria : null))
@@ -234,50 +249,15 @@ export async function GET(req: Request) {
     ));
     for (const cid of missingCatIds) {
       try {
-        const single = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string }>(
-          `/api/1.1/obj/${enc('Categoria Despesa')}/${enc(cid)}`
-        );
-        const item = single.response.results?.[0] as any;
-        const nome = item?.Categoria || item?.Nome || item?.name || item?.nome || '';
+        const single = await bubbleGetSingle<any>(`/api/1.1/obj/${enc('Categoria Despesa')}/${enc(cid)}`);
+        const nome = single?.Categoria || single?.Nome || single?.name || single?.nome || single?.['Descrição'] || single?.descricao || '';
         if (nome) catIdToNome.set(cid, String(nome));
       } catch { /* ignora */ }
     }
 
-    // (4c) *** NOVO ***: alguns registros de SubContas referenciam um Lançamento Mensal por ID
-    // que não veio na primeira busca (por exemplo, se o LM não possui "Empresa Mãe" ou está fora do limite).
-    // Aqui buscamos esses LMs faltantes 1-a-1 e populamos o lmIndex, garantindo que nada fique de fora.
-    const scLmIds = Array.from(new Set(
-      scRes.response.results.map(sc => {
-        const lmField =
-          (sc as any)['LançamentoMesnal'] ??
-          (sc as any)['LançamentoMensal'] ??
-          (sc as any)['Lançamento Mensal'];
-        return (typeof lmField === 'string') ? lmField : (lmField?._id || null);
-      }).filter((id: any) => typeof id === 'string')
-    )) as string[];
-
-    const missingLmIds = scLmIds.filter(id => !lmIndex.has(id));
-    for (const id of missingLmIds) {
-      try {
-        const single = await bubbleGet<any>(`/api/1.1/obj/${enc('LançamentoMensal')}/${enc(id)}`);
-        const lm = single.response.results?.[0];
-        if (!lm) continue;
-
-        const ano = parseAno(lm.Ano) || parseAno(lm?.Data?.split?.('/')?.[1]);
-        const mes = parseMes(lm.Mês) || Number(lm?.Data?.split?.('/')?.[0]);
-        const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
-        const agfNome = agfIdToNome.get(agfId || '') || agfId || 'AGF';
-        if (ano && mes) {
-          lmIndex.set(id, { ano, mes, agfId, agfNome });
-        }
-      } catch {
-        // Se falhar, seguimos — haverá outros fallbacks (ex.: parseMesAnoStr) mais abaixo
-      }
-    }
-
     // 5) Balancete (objetos) – somente "Total"
     const balCons = constraints([
-      { key: 'Lançamento Mensal', constraint_type: 'in', value: Array.from(lmIndex.keys()) },
+      { key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds },
       { key: 'Tipo de objeto',    constraint_type: 'equals', value: 'Total' },
     ]);
     const balRes = await bubbleGet<{
@@ -346,7 +326,7 @@ export async function GET(req: Request) {
       entry.objetos += parseValorBR((b as any).Quantidade);
     }
 
-    // 5.3) Despesas por categoria (SubContas)
+    // 5.3) Despesas por categoria (SubContas) — com fallback de LM por ID
     for (const sc of scRes.response.results) {
       const lmField =
         (sc as any)['LançamentoMesnal'] ??
@@ -354,11 +334,28 @@ export async function GET(req: Request) {
         (sc as any)['Lançamento Mensal'];
 
       let ano = 0, mes = 0, agfNome = 'AGF';
+      let agfIdFromLM: string | undefined;
 
       if (typeof lmField === 'string') {
-        const meta = lmIndex.get(lmField);
+        let meta = lmIndex.get(lmField);
+
+        // >>> NOVO: se não estiver no índice, busca LM por ID (forma correta p/ single)
+        if (!meta && lmField) {
+          try {
+            const lmSingle = await bubbleGetSingle<any>(`/api/1.1/obj/${enc('LançamentoMensal')}/${enc(lmField)}`);
+            const anoS = parseAno(lmSingle?.Ano) || parseAno(lmSingle?.Data?.split?.('/')?.[1]);
+            const mesS = parseMes(lmSingle?.Mês) || Number(lmSingle?.Data?.split?.('/')?.[0]);
+            const agfIdS = typeof lmSingle?.AGF === 'string' ? lmSingle.AGF : lmSingle?.AGF?._id;
+            const agfNomeS = agfIdToNome.get(agfIdS || '') || agfIdS || 'AGF';
+            if (anoS && mesS) {
+              meta = { ano: anoS, mes: mesS, agfId: agfIdS, agfNome: agfNomeS };
+              lmIndex.set(lmField, meta); // cache para as próximas linhas
+            }
+          } catch { /* ignora, segue com as outras heurísticas */ }
+        }
+
         if (meta) {
-          ano = meta.ano; mes = meta.mes; agfNome = meta.agfNome;
+          ano = meta.ano; mes = meta.mes; agfNome = meta.agfNome; agfIdFromLM = meta.agfId;
         } else {
           const parsed = parseMesAnoStr(lmField);
           if (parsed) { ano = parsed.ano; mes = parsed.mes; }
@@ -367,15 +364,19 @@ export async function GET(req: Request) {
         ano = parseAno((lmField as any).Ano);
         mes = parseMes((lmField as any).Mês);
         const aid = typeof (lmField as any).AGF === 'string' ? (lmField as any).AGF : (lmField as any).AGF?._id;
+        agfIdFromLM = aid;
         agfNome = agfIdToNome.get(aid || '') || agfNome;
       }
 
-      // se vier AGF direto na SubConta, sobrescreve
+      // Se vier AGF direto na SubConta, sobrescreve
       if ((sc as any).AGF) {
         const agfField = (sc as any).AGF;
         const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
         agfNome = agfIdToNome.get(agfId || '') || agfNome;
+      } else if (!agfNome && agfIdFromLM) {
+        agfNome = agfIdToNome.get(agfIdFromLM) || agfNome;
       }
+
       if (!ano || !mes) continue;
 
       const entry = ensure(ano, mes, agfNome);
