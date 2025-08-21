@@ -62,7 +62,7 @@ function parseValorBR(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** NOVO: Mapa de ID de Categoria (Bubble) -> chave canônica da tabela */
+/** Mapa de ID de Categoria (Bubble) -> chave canônica da tabela */
 const CAT_ID_TO_KEY: Record<string, string> = {
   // AGF 1751032012715x423593633964884000
   "1754514204139x526063856276349100": "folha_pagamento",
@@ -100,7 +100,7 @@ const CAT_ID_TO_KEY: Record<string, string> = {
 
 // normaliza categorias das SubContas para chaves fixas do front
 function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categoriaId?: string): string {
-  // 1) Prioriza o ID de categoria quando disponível
+  // Prioriza o ID de categoria quando disponível
   if (categoriaId && CAT_ID_TO_KEY[categoriaId]) {
     return CAT_ID_TO_KEY[categoriaId];
   }
@@ -132,7 +132,7 @@ function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categori
   if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
   if (s.includes('extra')) return 'extras';
 
-  // Se o nome da categoria veio vazio/inesperado, tenta pela descrição
+  // Heurísticas pela descrição (quando nome vier inesperado)
   const d = (descricao || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   if (/(pis|cofins|irrf|iss)/.test(d)) return 'impostos';
   if (/(uber|post[oa]|estaciona|motoboy|pedag|sem parar|km|combust)/.test(d)) return 'veiculos';
@@ -199,7 +199,7 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // 3) Categorias (id -> nome) — pega o máximo possível
+    // 3) Categorias (id -> nome)
     const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string; Descrição?: string; descricao?: string }>(
       `/api/1.1/obj/${enc('Categoria Despesa')}?limit=2000`
     );
@@ -226,7 +226,7 @@ export async function GET(req: Request) {
       descricao?: string;
     }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scCons}`);
 
-    // (4b) Se aparecerem IDs de categoria que não vieram na listagem, busca 1-a-1
+    // (4b) Buscar categorias faltantes por ID (casos raros)
     const missingCatIds = Array.from(new Set(
       scRes.response.results
         .map(sc => (typeof (sc as any).Categoria === 'string' ? (sc as any).Categoria : null))
@@ -243,9 +243,41 @@ export async function GET(req: Request) {
       } catch { /* ignora */ }
     }
 
+    // (4c) *** NOVO ***: alguns registros de SubContas referenciam um Lançamento Mensal por ID
+    // que não veio na primeira busca (por exemplo, se o LM não possui "Empresa Mãe" ou está fora do limite).
+    // Aqui buscamos esses LMs faltantes 1-a-1 e populamos o lmIndex, garantindo que nada fique de fora.
+    const scLmIds = Array.from(new Set(
+      scRes.response.results.map(sc => {
+        const lmField =
+          (sc as any)['LançamentoMesnal'] ??
+          (sc as any)['LançamentoMensal'] ??
+          (sc as any)['Lançamento Mensal'];
+        return (typeof lmField === 'string') ? lmField : (lmField?._id || null);
+      }).filter((id: any) => typeof id === 'string')
+    )) as string[];
+
+    const missingLmIds = scLmIds.filter(id => !lmIndex.has(id));
+    for (const id of missingLmIds) {
+      try {
+        const single = await bubbleGet<any>(`/api/1.1/obj/${enc('LançamentoMensal')}/${enc(id)}`);
+        const lm = single.response.results?.[0];
+        if (!lm) continue;
+
+        const ano = parseAno(lm.Ano) || parseAno(lm?.Data?.split?.('/')?.[1]);
+        const mes = parseMes(lm.Mês) || Number(lm?.Data?.split?.('/')?.[0]);
+        const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
+        const agfNome = agfIdToNome.get(agfId || '') || agfId || 'AGF';
+        if (ano && mes) {
+          lmIndex.set(id, { ano, mes, agfId, agfNome });
+        }
+      } catch {
+        // Se falhar, seguimos — haverá outros fallbacks (ex.: parseMesAnoStr) mais abaixo
+      }
+    }
+
     // 5) Balancete (objetos) – somente "Total"
     const balCons = constraints([
-      { key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds },
+      { key: 'Lançamento Mensal', constraint_type: 'in', value: Array.from(lmIndex.keys()) },
       { key: 'Tipo de objeto',    constraint_type: 'equals', value: 'Total' },
     ]);
     const balRes = await bubbleGet<{
