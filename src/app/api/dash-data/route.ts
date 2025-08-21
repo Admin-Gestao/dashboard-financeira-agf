@@ -62,9 +62,9 @@ function parseValorBR(v: any): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Mapa rápido (opcional) de ID de Categoria -> chave canônica */
+/** Mapa de ID de Categoria (Bubble) -> chave canônica da tabela */
 const CAT_ID_TO_KEY: Record<string, string> = {
-  // AGF 1751032012715x423593633964884000 (Campo Limpo)
+  // AGF 1751032012715x423593633964884000
   "1754514204139x526063856276349100": "folha_pagamento",
   "1751034502993x140272905276620800": "veiculos",
   "1751034541896x868439199319326700": "telefone",
@@ -98,9 +98,9 @@ const CAT_ID_TO_KEY: Record<string, string> = {
   "1755695521004x217825384616417760": "folha_pagamento",
 };
 
-/** Normaliza categorias das SubContas para as chaves fixas do front */
+// normaliza categorias das SubContas para chaves fixas do front
 function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categoriaId?: string): string {
-  // 1) Prioriza o ID de categoria quando disponível
+  // Prioriza o ID de categoria quando disponível
   if (categoriaId && CAT_ID_TO_KEY[categoriaId]) {
     return CAT_ID_TO_KEY[categoriaId];
   }
@@ -132,7 +132,7 @@ function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categori
   if (s.includes('folha') || s.includes('pgto') || s.includes('pagament')) return 'folha_pagamento';
   if (s.includes('extra')) return 'extras';
 
-  // Se o nome da categoria veio vazio/inesperado, tenta pela descrição
+  // Heurísticas pela descrição (quando nome vier inesperado)
   const d = (descricao || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
   if (/(pis|cofins|irrf|iss)/.test(d)) return 'impostos';
   if (/(uber|post[oa]|estaciona|motoboy|pedag|sem parar|km|combust)/.test(d)) return 'veiculos';
@@ -146,38 +146,16 @@ function normalizeCategoriaFromMeta(nomeCat: string, descricao: string, categori
   return 'extras';
 }
 
-/* =========================
-   BUBBLE FETCH COM FALLBACK
-   ========================= */
-type BubbleResponse<T=any> = { response: { results?: T[]; count?: number } & Record<string, any> };
-
-async function bubbleGetFirst<T=any>(paths: string[]): Promise<BubbleResponse<T>> {
-  let lastError: any = null;
-  for (const p of paths) {
-    try {
-      const res = await fetch(`${BASE}${p}`, {
-        headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' },
-        cache: 'no-store',
-      });
-      if (!res.ok) {
-        lastError = new Error(`HTTP ${res.status} on ${p}`);
-        continue;
-      }
-      const json = await res.json();
-      return json as BubbleResponse<T>;
-    } catch (e) {
-      lastError = e;
-      continue;
-    }
+async function bubbleGet<T>(path: string) {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { Authorization: `Bearer ${KEY}`, Accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Bubble GET ${path} -> ${res.status} ${body}`);
   }
-  throw lastError ?? new Error('Falha ao consultar Bubble');
-}
-
-function objPathsPlural(objectCandidates: string[], query: string) {
-  return objectCandidates.map(o => `/api/1.1/obj/${enc(o)}${query}`);
-}
-function objPathSingle(objectCandidates: string[], id: string) {
-  return objectCandidates.map(o => `/api/1.1/obj/${enc(o)}/${enc(id)}`);
+  return (await res.json()) as { response: { results: T[]; count?: number } };
 }
 
 export async function GET(req: Request) {
@@ -186,43 +164,33 @@ export async function GET(req: Request) {
     const empresaId = searchParams.get('empresa_id');
     if (!empresaId) return NextResponse.json({ error: 'empresa_id ausente' }, { status: 400 });
 
-    // Candidatos de nome para cada objeto (tenta todos nessa ordem)
-    const OBJ = {
-      agf: ['agf','AGF'],
-      lm: ['lançamentomensal','LançamentoMensal','lan%C3%A7amentomensal'],
-      categoria: ['categoriadespesa','Categoria Despesa'],
-      subconta: ['despesa(subconta)','Despesa (SubConta)'],
-      balancete: ['balancete','Balancete'],
-    };
-
-    // === 1) AGFs da empresa ===
+    // 1) AGFs da empresa
     const agfCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
-    const agfsRes = await bubbleGetFirst<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
-      objPathsPlural(OBJ.agf, `?limit=200&constraints=${agfCons}`)
+    const agfsRes = await bubbleGet<{ _id: string; 'Nome da AGF'?: string; nome?: string; name?: string }>(
+      `/api/1.1/obj/${enc('AGF')}?limit=200&constraints=${agfCons}`
     );
-    const agfs = (agfsRes.response.results || []).map(a => ({
+    const agfs = agfsRes.response.results.map(a => ({
       id: a._id,
       nome: (a as any)['Nome da AGF'] || (a as any).nome || (a as any).name || a._id,
     }));
     const agfIdToNome = new Map<string, string>(agfs.map(a => [a.id, a.nome]));
     const agfIds = agfs.map(a => a.id);
 
-    // Se não houver AGF, devolve estrutura vazia (evita 500 por IN [])
-    if (agfIds.length === 0) {
-      return NextResponse.json({ agfs: [], categoriasDespesa: [
-        'aluguel','comissoes','extras','honorarios','impostos','pitney','telefone','veiculos','folha_pagamento'
-      ], dados: {} });
-    }
-
-    // === 2) Lançamentos Mensais da empresa ===
+    // 2) Lançamentos Mensais (fonte oficial)
     const lmCons = constraints([{ key: 'Empresa Mãe', constraint_type: 'equals', value: empresaId }]);
-    const lmRes = await bubbleGetFirst<{
-      _id: string; Ano: any; Mês: any; AGF: string | { _id: string };
-      total_receita?: number; total_despesa?: number; resultado_final?: number; Data?: string;
-    }>(objPathsPlural(OBJ.lm, `?limit=1000&constraints=${lmCons}`));
+    const lmRes = await bubbleGet<{
+      _id: string;
+      Ano: any;
+      Mês: any;
+      AGF: string | { _id: string };
+      total_receita?: number;
+      total_despesa?: number;
+      resultado_final?: number;
+      Data?: string;
+    }>(`/api/1.1/obj/${enc('LançamentoMensal')}?limit=1000&constraints=${lmCons}`);
 
     const lmIndex = new Map<string, { ano: number; mes: number; agfId?: string; agfNome: string }>();
-    for (const lm of (lmRes.response.results || [])) {
+    for (const lm of lmRes.response.results) {
       const ano = parseAno((lm as any).Ano) || parseAno((lm as any).Data?.split('/')[1]);
       const mes = parseMes((lm as any).Mês) || Number((lm as any).Data?.split('/')[0]);
       const agfId = typeof lm.AGF === 'string' ? lm.AGF : (lm.AGF as any)?._id;
@@ -231,12 +199,12 @@ export async function GET(req: Request) {
     }
     const lmIds = Array.from(lmIndex.keys());
 
-    // === 3) Categorias (id -> nome) ===
-    const catRes = await bubbleGetFirst<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string; Descrição?: string; descricao?: string }>(
-      objPathsPlural(OBJ.categoria, `?limit=2000`)
+    // 3) Categorias (id -> nome)
+    const catRes = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string; Descrição?: string; descricao?: string }>(
+      `/api/1.1/obj/${enc('Categoria Despesa')}?limit=2000`
     );
     const catIdToNome = new Map<string, string>(
-      (catRes.response.results || []).map(c => {
+      catRes.response.results.map(c => {
         const nome =
           (c as any).Categoria || (c as any).Nome || (c as any).name || (c as any).nome ||
           (c as any).Descrição || (c as any).descricao || '';
@@ -244,55 +212,79 @@ export async function GET(req: Request) {
       })
     );
 
-    // === 4) SubContas (busca por AGF e por LM; evita IN [] quando não houver LM) ===
-    const scParts: any[] = [];
+    // 4) SubContas (detalhe das despesas por categoria)
+    const scCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
+    const scRes = await bubbleGet<{
+      _id: string;
+      AGF: string | { _id: string };
+      'LançamentoMesnal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      'LançamentoMensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      Categoria?: any;
+      Valor: number | string;
+      Descrição?: string;
+      descricao?: string;
+    }>(`/api/1.1/obj/${enc('Despesa (SubConta)')}?limit=5000&constraints=${scCons}`);
 
-    // por AGF
-    const subByAgfCons = constraints([{ key: 'AGF', constraint_type: 'in', value: agfIds }]);
-    const scAgf = await bubbleGetFirst<any>(objPathsPlural(OBJ.subconta, `?limit=5000&constraints=${subByAgfCons}`));
-    scParts.push(...(scAgf.response.results || []));
-
-    // por LM, só se houver LM
-    if (lmIds.length > 0) {
-      const subByLmCons  = constraints([{ key: 'LançamentoMesnal', constraint_type: 'in', value: lmIds }]);
-      const subByLmCons2 = constraints([{ key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds }]);
-      const [scLm1, scLm2] = await Promise.all([
-        bubbleGetFirst<any>(objPathsPlural(OBJ.subconta, `?limit=5000&constraints=${subByLmCons}`)),
-        bubbleGetFirst<any>(objPathsPlural(OBJ.subconta, `?limit=5000&constraints=${subByLmCons2}`)),
-      ]);
-      scParts.push(...(scLm1.response.results || []), ...(scLm2.response.results || []));
-    }
-
-    // merge únicos por _id
-    const scMap = new Map<string, any>();
-    for (const it of scParts) scMap.set(it._id, it);
-    const subAll = Array.from(scMap.values());
-
-    // (4b) Trazer nomes de categorias faltantes
+    // (4b) Buscar categorias faltantes por ID (casos raros)
     const missingCatIds = Array.from(new Set(
-      subAll
-        .map((sc: any) => (typeof sc?.Categoria === 'string' ? sc.Categoria : null))
-        .filter((id: any): id is string => !!id && !catIdToNome.has(id))
+      scRes.response.results
+        .map(sc => (typeof (sc as any).Categoria === 'string' ? (sc as any).Categoria : null))
+        .filter((id): id is string => !!id && !catIdToNome.has(id))
     ));
     for (const cid of missingCatIds) {
       try {
-        const single = await bubbleGetFirst<any>(objPathSingle(OBJ.categoria, cid));
-        const item = (single.response as any).results?.[0] || (single.response as any);
+        const single = await bubbleGet<{ _id: string; Categoria?: string; Nome?: string; name?: string; nome?: string }>(
+          `/api/1.1/obj/${enc('Categoria Despesa')}/${enc(cid)}`
+        );
+        const item = single.response.results?.[0] as any;
         const nome = item?.Categoria || item?.Nome || item?.name || item?.nome || '';
         if (nome) catIdToNome.set(cid, String(nome));
       } catch { /* ignora */ }
     }
 
-    // === 5) Balancete (objetos - Total) ===
-    let balResults: any[] = [];
-    if (lmIds.length > 0) {
-      const balCons = constraints([
-        { key: 'Lançamento Mensal', constraint_type: 'in', value: lmIds },
-        { key: 'Tipo de objeto',    constraint_type: 'equals', value: 'Total' },
-      ]);
-      const balRes = await bubbleGetFirst<any>(objPathsPlural(OBJ.balancete, `?limit=2000&constraints=${balCons}`));
-      balResults = balRes.response.results || [];
+    // (4c) *** NOVO ***: alguns registros de SubContas referenciam um Lançamento Mensal por ID
+    // que não veio na primeira busca (por exemplo, se o LM não possui "Empresa Mãe" ou está fora do limite).
+    // Aqui buscamos esses LMs faltantes 1-a-1 e populamos o lmIndex, garantindo que nada fique de fora.
+    const scLmIds = Array.from(new Set(
+      scRes.response.results.map(sc => {
+        const lmField =
+          (sc as any)['LançamentoMesnal'] ??
+          (sc as any)['LançamentoMensal'] ??
+          (sc as any)['Lançamento Mensal'];
+        return (typeof lmField === 'string') ? lmField : (lmField?._id || null);
+      }).filter((id: any) => typeof id === 'string')
+    )) as string[];
+
+    const missingLmIds = scLmIds.filter(id => !lmIndex.has(id));
+    for (const id of missingLmIds) {
+      try {
+        const single = await bubbleGet<any>(`/api/1.1/obj/${enc('LançamentoMensal')}/${enc(id)}`);
+        const lm = single.response.results?.[0];
+        if (!lm) continue;
+
+        const ano = parseAno(lm.Ano) || parseAno(lm?.Data?.split?.('/')?.[1]);
+        const mes = parseMes(lm.Mês) || Number(lm?.Data?.split?.('/')?.[0]);
+        const agfId = typeof lm.AGF === 'string' ? lm.AGF : lm.AGF?._id;
+        const agfNome = agfIdToNome.get(agfId || '') || agfId || 'AGF';
+        if (ano && mes) {
+          lmIndex.set(id, { ano, mes, agfId, agfNome });
+        }
+      } catch {
+        // Se falhar, seguimos — haverá outros fallbacks (ex.: parseMesAnoStr) mais abaixo
+      }
     }
+
+    // 5) Balancete (objetos) – somente "Total"
+    const balCons = constraints([
+      { key: 'Lançamento Mensal', constraint_type: 'in', value: Array.from(lmIndex.keys()) },
+      { key: 'Tipo de objeto',    constraint_type: 'equals', value: 'Total' },
+    ]);
+    const balRes = await bubbleGet<{
+      _id: string;
+      'Lançamento Mensal'?: string | { _id: string; Ano?: any; Mês?: any; AGF?: any };
+      Quantidade?: number | string;
+    }>(`/api/1.1/obj/${enc('Balancete')}?limit=2000&constraints=${balCons}`);
 
     // -------- AGREGAÇÃO --------
     const categoriasDespesa = [
@@ -321,8 +313,8 @@ export async function GET(req: Request) {
       return dados[ano][mes][agfNome];
     };
 
-    // 5.1) LM -> receita e despesa
-    for (const lm of (lmRes.response.results || [])) {
+    // 5.1) LM -> receita e despesa (oficiais)
+    for (const lm of lmRes.response.results) {
       const meta = lmIndex.get(lm._id);
       if (!meta) continue;
       const { ano, mes, agfNome } = meta;
@@ -333,8 +325,8 @@ export async function GET(req: Request) {
       entry.despesa_total += Number((lm as any).total_despesa || 0);
     }
 
-    // 5.2) Objetos
-    for (const b of balResults) {
+    // 5.2) Objetos (Balancete – somente "Total")
+    for (const b of balRes.response.results) {
       const lmField = (b as any)['Lançamento Mensal'];
       let ano = 0, mes = 0, agfNome = 'AGF';
 
@@ -354,8 +346,8 @@ export async function GET(req: Request) {
       entry.objetos += parseValorBR((b as any).Quantidade);
     }
 
-    // 5.3) Despesas por categoria (SubContas) — soma todas as linhas
-    for (const sc of subAll) {
+    // 5.3) Despesas por categoria (SubContas)
+    for (const sc of scRes.response.results) {
       const lmField =
         (sc as any)['LançamentoMesnal'] ??
         (sc as any)['LançamentoMensal'] ??
@@ -378,7 +370,7 @@ export async function GET(req: Request) {
         agfNome = agfIdToNome.get(aid || '') || agfNome;
       }
 
-      // se vier AGF direto na SubConta, prioriza
+      // se vier AGF direto na SubConta, sobrescreve
       if ((sc as any).AGF) {
         const agfField = (sc as any).AGF;
         const agfId = typeof agfField === 'string' ? agfField : agfField?._id;
@@ -388,6 +380,7 @@ export async function GET(req: Request) {
 
       const entry = ensure(ano, mes, agfNome);
 
+      // Categoria pode ser ID, texto ou objeto
       let nomeCategoria = '';
       const c = (sc as any).Categoria;
       if (c) {
@@ -423,7 +416,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({ agfs, categoriasDespesa, dados });
   } catch (e: any) {
-    console.error('Erro na API /api/dash-data:', e?.message || e);
-    return NextResponse.json({ error: e?.message || 'Erro Interno do Servidor' }, { status: 500 });
+    console.error('Erro na API:', e);
+    return NextResponse.json({ error: e.message || 'Erro Interno do Servidor' }, { status: 500 });
   }
 }
