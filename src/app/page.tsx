@@ -410,12 +410,13 @@ export default function DashboardPage() {
           <div className="bg-card p-4 rounded-lg lg:col-span-2">
             <h3 className="font-bold mb-4 text-text">Despesas por categoria</h3>
             <div className="overflow-x-auto">
-              <table className="min-w-[700px] w-full text-sm">
+              {/* SCROLL + não espremer valores */}
+              <table className="min-w-[1200px] w-full text-sm">
                 <thead>
                   <tr className="text-left text-text/70 border-b border-white/10">
-                    <th className="py-2 px-2">AGF</th>
+                    <th className="py-2 px-2 whitespace-nowrap">AGF</th>
                     {sourceCategorias.map((c: string) => (
-                      <th key={c} className="py-2 px-2 text-right capitalize">{c.replace(/_/g," ")}</th>
+                      <th key={c} className="py-2 px-2 text-right capitalize whitespace-nowrap">{c.replace(/_/g," ")}</th>
                     ))}
                   </tr>
                 </thead>
@@ -425,9 +426,9 @@ export default function DashboardPage() {
                   ) : (
                     dadosProcessados.totaisPorAgf.map((r) => (
                       <tr key={r.nome} className="border-b border-white/5">
-                        <td className="py-2 px-2">{r.nome}</td>
+                        <td className="py-2 px-2 whitespace-nowrap">{r.nome}</td>
                         {sourceCategorias.map((c: string) => (
-                          <td key={c} className="py-2 px-2 text-right">
+                          <td key={c} className="py-2 px-2 text-right whitespace-nowrap">
                             <span className="text-destructive font-semibold">
                               {moneyRounded(r.despesasDetalhadas[c] || 0)}
                             </span>
