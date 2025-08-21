@@ -377,7 +377,7 @@ export default function DashboardPage() {
           </ChartContainer>
         </section>
 
-        {/* >>> TABELAS – AGORA ANTES DA SIMULAÇÃO <<< */}
+        {/* >>> TABELAS – ANTES DA SIMULAÇÃO <<< */}
         <section className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Objetos tratados (1/3) */}
           <div className="bg-card p-4 rounded-lg lg:col-span-1">
@@ -409,14 +409,18 @@ export default function DashboardPage() {
           {/* Despesas por categoria (2/3) */}
           <div className="bg-card p-4 rounded-lg lg:col-span-2">
             <h3 className="font-bold mb-4 text-text">Despesas por categoria</h3>
+
+            {/* Ajuste 1: container com scroll horizontal */}
             <div className="overflow-x-auto">
-              {/* SCROLL + não espremer valores */}
+              {/* Ajuste 2: min-width alto + nowrap para não “espremer” os valores */}
               <table className="min-w-[1200px] w-full text-sm">
                 <thead>
                   <tr className="text-left text-text/70 border-b border-white/10">
                     <th className="py-2 px-2 whitespace-nowrap">AGF</th>
                     {sourceCategorias.map((c: string) => (
-                      <th key={c} className="py-2 px-2 text-right capitalize whitespace-nowrap">{c.replace(/_/g," ")}</th>
+                      <th key={c} className="py-2 px-2 text-right capitalize whitespace-nowrap">
+                        {c.replace(/_/g," ")}
+                      </th>
                     ))}
                   </tr>
                 </thead>
@@ -430,7 +434,7 @@ export default function DashboardPage() {
                         {sourceCategorias.map((c: string) => (
                           <td key={c} className="py-2 px-2 text-right whitespace-nowrap">
                             <span className="text-destructive font-semibold">
-                              {moneyRounded(r.despesasDetalhadas[c] || 0)}
+                              {moneyRounded(r.despesasDetalhadas[c] ?? 0)}
                             </span>
                           </td>
                         ))}
@@ -443,7 +447,7 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* ===================== SIMULAÇÃO (AGORA A ÚLTIMA) ===================== */}
+        {/* ===================== SIMULAÇÃO (ÚLTIMA) ===================== */}
         <section className="bg-card p-4 rounded-lg">
           <h3 className="font-bold mb-4 text-text">Simulação de Margem de Lucro</h3>
           <div className="mb-4">
